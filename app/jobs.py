@@ -169,16 +169,64 @@ def publish_to_coresight(job_id: str) -> dict:
     return res
 
 
+# 아직 회의에 들어가지 않은 상태들. 여기서 중지하면 남길 게 없으니 기록째 지운다.
+PRE_JOIN = ("scheduled", "queued", "joining")
+
+
 def stop_job(job_id: str) -> None:
-    """봇을 회의에서 내보낸다. 예약 상태면 예약을 취소한다."""
+    """봇을 회의에서 내보낸다. 입장 전에 중지한 회의는 기록을 바로 삭제한다."""
     job = get_job(job_id)
-    if job and job["status"] == "scheduled":
-        _update(job_id, status="stopped", reason="예약 취소",
-                ended_at=datetime.now().isoformat(timespec="seconds"))
-        append_log(job_id, "예약 취소됨")
+    if not job:
         return
-    _stop_flags[job_id] = True
+    if job["status"] != "scheduled":      # 예약 대기엔 아직 워커 스레드가 없다
+        _stop_flags[job_id] = True
+    if job["status"] in PRE_JOIN:
+        append_log(job_id, "입장 전 중지 — 기록을 삭제한다")
+        delete_job(job_id)
+        return
     append_log(job_id, "퇴장 요청 접수 — 회의에서 나간 뒤 전사·요약을 이어서 진행한다")
+
+
+def set_title(job_id: str, title: str) -> bool:
+    """제목 변경. 빈 값이면 목록에 '제목 없음' 으로 표시된다."""
+    if not get_job(job_id):
+        return False
+    _update(job_id, title=(title or "").strip()[:80])
+    return True
+
+
+def autotitle(job_id: str, summary: str, log) -> str:
+    """제목이 비어 있으면 요약에서 만들어 채운다. 붙인 제목이 이미 있으면 손대지 않는다.
+
+    요약은 이미 저장된 뒤에 불린다 — LLM 이 죽어 있어도 요약·기록은 그대로 남아야 하므로
+    여기서 나는 예외는 로그만 남기고 삼킨다.
+    """
+    job = get_job(job_id)          # 회의 중에 사용자가 제목을 붙였을 수 있으니 다시 읽는다
+    if not job or (job.get("title") or "").strip():
+        return ""
+    try:
+        title = summarize.make_title(summary, log)
+    except Exception as e:  # noqa: BLE001
+        log(f"제목 자동 생성 실패(요약은 정상): {type(e).__name__}: {e}")
+        return ""
+    if title:
+        set_title(job_id, title)
+        log(f"제목 자동 생성: {title}")
+    return title
+
+
+def delete_job(job_id: str) -> bool:
+    """기록·녹음·전사를 완전히 지운다. 되돌릴 수 없다."""
+    job = get_job(job_id)
+    if not job:
+        return False
+    with _db_lock, _conn() as c:
+        c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+    for p in (job.get("wav_path"), config.DATA / "transcripts" / f"{job_id}.txt"):
+        if p:
+            Path(p).unlink(missing_ok=True)
+    print(f"{job_id[:8]} 기록 삭제됨", flush=True)
+    return True
 
 
 def _tail_dbfs(wav: Path, seconds: float) -> float:
@@ -265,6 +313,8 @@ def run_job(job_id: str) -> None:
         _update(job_id, summary=summary, status="done",
                 ended_at=datetime.now().isoformat(timespec="seconds"))
         log("완료")
+        autotitle(job_id, summary, log)   # 요약을 먼저 확정한 뒤에 건드린다
+
     except Exception as e:  # noqa: BLE001
         log(f"실패: {type(e).__name__}: {e}")
         _update(job_id, status="failed", reason=f"{type(e).__name__}: {e}",
@@ -273,6 +323,8 @@ def run_job(job_id: str) -> None:
         _stop_flags.pop(job_id, None)
         if live is not None:       # 어떤 경로로 끝나든 워커를 남기지 않는다
             live.cancel()
+        if not get_job(job_id):    # 중지로 기록이 삭제됐으면 그 뒤 녹음된 파일도 남기지 않는다
+            wav.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":   # CLI: python3 -m app.jobs <회의URL>

@@ -6,6 +6,12 @@ node_modules/
 __pycache__/
 *.log
 *.apk
+
+# Android (mobile/) 빌드 산출물 — 소스만 커밋한다
+mobile/.gradle/
+mobile/build/
+mobile/app/build/
+mobile/local.properties
 .venv/bin/python
 .venv/bin/python3
 .venv/bin/python3.12

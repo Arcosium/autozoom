@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- DayNight: 웹(ui.py)이 prefers-color-scheme 를 따르므로 껍데기도 시스템 모드를 따라간다.
+         색 값은 values/colors.xml 과 values-night/colors.xml 에서 갈린다. -->
+    <style name="Theme.AutoZoom" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/paper</item>
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:navigationBarColor">@color/paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.AutoZoom.Splash" parent="Theme.AutoZoom">
+        <item name="windowSplashScreenBackground">@color/paper</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.AutoZoom</item>
+    </style>
+</resources>

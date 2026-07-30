@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ui.py 의 @media (prefers-color-scheme: dark) 블록과 같은 값 -->
+    <color name="paper">#14140f</color>
+    <color name="rule">#242319</color>
+    <color name="accent">#e0685c</color>
+    <color name="ink">#eceada</color>
+    <color name="ink_2">#b3b0a0</color>
+    <color name="ink_3">#7b7869</color>
+</resources>

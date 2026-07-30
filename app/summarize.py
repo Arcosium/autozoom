@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from typing import Callable
 
@@ -87,6 +88,53 @@ def summarize(transcript: str, log: Log) -> str:
     text = _chat([{"role": "system", "content": SYSTEM},
                   {"role": "user", "content": prompt}], log)
     return text or "_(요약 생성 실패 — 원문을 직접 확인할 것)_"
+
+
+TITLE_SYSTEM = (
+    "너는 회의록에 제목을 붙인다. 25자 이내의 한국어 명사구 하나만 출력하라. "
+    "문장으로 쓰지 말고, 마침표·따옴표·'제목:' 같은 접두어·설명을 붙이지 마라. "
+    "주어진 내용에 없는 사실을 지어내지 마라."
+)
+
+# 헤딩은 '#' 개수로 깊이를 잰다 — '^##\\s*' 로 잡으면 '### 한 줄 요약' 을 놓친다(요약 LLM 이 흔들린다).
+_ONE_LINE_H = re.compile(r"^#{1,6}\s*한 줄 요약\s*$")
+
+
+def one_line(summary: str) -> str:
+    """요약에서 '## 한 줄 요약' 섹션 본문만 뽑는다. 없으면 빈 문자열."""
+    lines = (summary or "").splitlines()
+    for i, line in enumerate(lines):
+        if _ONE_LINE_H.match(line.strip()):
+            body = []
+            for nxt in lines[i + 1:]:
+                if nxt.lstrip().startswith("#"):
+                    break
+                if nxt.strip():
+                    body.append(nxt.strip())
+            return " ".join(body)
+    return ""
+
+
+def clean_title(text: str) -> str:
+    """LLM 이 흔히 덧붙이는 군더더기(따옴표·'제목:'·마침표·여러 줄)를 털어낸다."""
+    first = next((s for s in (text or "").splitlines() if s.strip()), "")
+    first = re.sub(r'^\s*[\'"“”\[(]*\s*(제목|title)\s*[:：]\s*', "", first, flags=re.I)
+    return first.strip().strip('\'"“”[]()').rstrip(" .。·:：-–—").strip()[:60]
+
+
+def make_title(summary: str, log: Log) -> str:
+    """요약을 바탕으로 목록에 쓸 짧은 제목을 만든다. 만들지 못하면 빈 문자열.
+
+    한 줄 요약만 넣는다 — 원문을 다 넣을 이유가 없고(이미 요약이 있다), 입력이 짧아 1초면 끝난다.
+    """
+    gist = one_line(summary) or (summary or "")
+    gist = re.sub(r"^#+\s*", "", gist.strip())
+    if not gist:
+        return ""
+    text = _chat([{"role": "system", "content": TITLE_SYSTEM},
+                  {"role": "user", "content": f"다음 회의의 제목:\n{gist[:800]}"}],
+                 log, temperature=0.2)
+    return clean_title(text)
 
 
 def ask(transcript: str, question: str, log: Log) -> str:

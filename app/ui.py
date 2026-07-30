@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 
 CSS = """
@@ -45,11 +46,12 @@ h2.rule{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(-
 .filed{font-size:12px;color:var(--ok);letter-spacing:0;text-transform:none}
 button:disabled{opacity:.5;cursor:wait}
 
-form.compose{display:grid;grid-template-columns:1fr 170px 190px auto;gap:16px;align-items:end;
+form.compose{display:grid;grid-template-columns:1fr 170px 190px auto;gap:18px 20px;align-items:end;
   padding:24px 0;border-bottom:1px solid var(--rule)}
+form.compose .wide{grid-column:1 / -1}   /* 회의 링크는 한 줄 전체를 쓴다 */
 label{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;
   color:var(--ink-3);margin-bottom:6px;font-weight:600}
-input[type=url],input[type=text],input[type=datetime-local]{
+input[type=url],input[type=text],input[type=password],input[type=datetime-local]{
   width:100%;padding:10px 2px;border:0;border-bottom:1px solid var(--ink-2);
   background:transparent;color:var(--ink);font-size:15px;font-family:inherit;
   min-height:44px;border-radius:0}
@@ -87,6 +89,7 @@ a:hover{border-bottom-color:var(--accent);color:var(--accent)}
 .state{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);
   white-space:nowrap;font-weight:600}
 .url{color:var(--ink-3);font-size:12px;word-break:break-all;display:block;margin-top:3px}
+.when-sm{display:none}   /* 좁은 화면에서만 제목 아래로 내려오는 날짜 (아래 미디어쿼리) */
 
 .empty{padding:56px 0;text-align:center;color:var(--ink-3)}
 .empty::before{content:"—";display:block;font-size:24px;margin-bottom:8px;color:var(--rule)}
@@ -130,12 +133,35 @@ details>summary{cursor:pointer;font-size:12px;letter-spacing:.14em;text-transfor
 .back{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);
   border:0;display:inline-block;margin:28px 0 0}
 
+.acct{float:right;clear:right;text-align:right;color:var(--ink-3);font-size:12px;
+  letter-spacing:.08em;margin-top:6px}
+.acct form{display:inline}
+button.link{background:transparent;border:0;color:var(--ink-3);font-size:12px;
+  letter-spacing:.08em;padding:0;min-height:0;border-bottom:1px solid var(--rule)}
+button.link:hover{color:var(--accent);border-bottom-color:var(--accent)}
+button.danger{color:var(--accent);border-color:var(--rule)}
+
+form.sheet{max-width:400px;margin:0 auto;display:grid;gap:22px}
+form.sheet button.primary{justify-self:start;padding:11px 32px}
+.msg{padding:12px 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+  font-size:14px}
+.msg.fail{color:var(--accent)}
+.msg.ok{color:var(--ok)}
+
+form.retitle{display:flex;gap:12px;align-items:flex-end;margin-top:18px;max-width:560px}
+form.retitle input{flex:1}
+
 @media (max-width:760px){
   .wrap{padding:0 18px 72px}
+  .acct{float:none;text-align:left}
   form.compose{grid-template-columns:1fr;gap:20px}
   .masthead .meta{float:none;text-align:left;margin-top:8px}
   .masthead h1{font-size:24px}
-  th:nth-child(4),td:nth-child(4){display:none}
+  /* 폰 폭에선 nowrap 인 날짜·길이 열이 제목을 3줄로 짓눌렀다 → 두 열을 접고 날짜는 제목 밑으로 */
+  th:nth-child(3),td:nth-child(3),th:nth-child(4),td:nth-child(4){display:none}
+  .when-sm{display:block;color:var(--ink-3);font-size:12px;margin-top:4px}
+  /* zoom URL 은 break-all 로 6줄까지 늘어나 한 기록이 화면을 다 먹는다 → 한 줄로 자른다 */
+  .url{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
 }
 """
 
@@ -155,6 +181,11 @@ ACTIVE = {"scheduled", "queued", "joining", "recording", "transcribing", "summar
 
 def _e(s) -> str:
     return html.escape(str(s or ""))
+
+
+def _json_str(s) -> str:
+    """onclick="…" 속성 안에 넣을 JS 문자열 리터럴(따옴표까지 이스케이프)."""
+    return html.escape(json.dumps(str(s or "")))
 
 
 BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -266,10 +297,87 @@ def page(title: str, body: str) -> str:
 <body><div class="wrap">{body}</div></body></html>"""
 
 
-def masthead(sub: str) -> str:
+def masthead(sub: str, user: str = "", admin: bool = False) -> str:
+    acct = ""
+    if user:
+        adm = ' <a href="/admin">승인 관리</a> ·' if admin else ""
+        acct = (f'<div class="acct mono">{_e(user)} ·{adm}'
+                f' <form method="post" action="/logout"><button class="link">로그아웃</button>'
+                f'</form></div>')
     return f"""<header class="masthead">
-  <div class="meta mono">AUTO&nbsp;ZOOM</div>
+  <div class="meta mono">AUTO&nbsp;ZOOM</div>{acct}
   <h1>회의 속기록</h1><p>{_e(sub)}</p></header>"""
+
+
+def login(err: str = "") -> str:
+    msg = f'<div class="msg fail">{_e(err)}</div>' if err else ""
+    body = masthead("승인된 계정만 입장할 수 있다.") + f"""
+<h2 class="rule">로그인</h2>
+<form class="sheet" method="post" action="/login" style="margin-top:32px">
+  {msg}
+  <div><label for="u">아이디</label>
+       <input id="u" name="username" type="text" autocomplete="username" required></div>
+  <div><label for="p">비밀번호</label>
+       <input id="p" name="password" type="password" autocomplete="current-password" required></div>
+  <button class="primary" type="submit">입장</button>
+  <p class="hint">계정이 없으면 <a href="/signup">가입 신청</a> 후 관리자 승인을 기다린다.</p>
+</form>"""
+    return page("로그인 · auto_zoom", body)
+
+
+def signup(err: str = "") -> str:
+    msg = f'<div class="msg fail">{_e(err)}</div>' if err else ""
+    body = masthead("관리자가 승인한 사람만 쓸 수 있다.") + f"""
+<h2 class="rule">가입 신청</h2>
+<form class="sheet" method="post" action="/signup" style="margin-top:32px">
+  {msg}
+  <div><label for="u">아이디</label>
+       <input id="u" name="username" type="text" autocomplete="username" required></div>
+  <div><label for="p">비밀번호</label>
+       <input id="p" name="password" type="password" autocomplete="new-password" required></div>
+  <button class="primary" type="submit">신청</button>
+  <p class="hint">신청 후 관리자 승인을 받아야 로그인된다. <a href="/login">로그인으로</a></p>
+</form>"""
+    return page("가입 신청 · auto_zoom", body)
+
+
+def notice(msg: str, ok: bool, link: str = "/login", link_text: str = "로그인으로") -> str:
+    body = masthead("") + f"""
+<div class="sheet" style="margin-top:48px">
+  <div class="msg {'ok' if ok else 'fail'}">{_e(msg)}</div>
+  <p class="hint" style="margin-top:20px"><a href="{link}">{_e(link_text)}</a></p>
+</div>"""
+    return page("알림 · auto_zoom", body)
+
+
+USER_STATE_KO = {"pending": "승인 대기", "approved": "사용 중", "rejected": "거절됨"}
+
+
+def admin(users: list[dict], me: str) -> str:
+    def actions(u: dict) -> str:
+        buttons = []
+        if u["status"] != "approved":
+            buttons.append(("approve", "승인", "ghost"))
+        if u["status"] != "rejected" and u["username"] != me:
+            buttons.append(("reject", "거절", "ghost"))
+        if u["username"] != me:
+            buttons.append(("remove", "삭제", "ghost danger"))
+        return "".join(
+            f'<form method="post" action="/admin/{a}" style="display:inline">'
+            f'<input type="hidden" name="username" value="{_e(u["username"])}">'
+            f'<button class="{cls}" type="submit">{label}</button></form> '
+            for a, label, cls in buttons)
+
+    rows = "".join(f"""<tr>
+      <td><span class="state">{_e(USER_STATE_KO.get(u["status"], u["status"]))}</span></td>
+      <td>{_e(u["username"])}{' · 관리자' if u.get("role") == "admin" else ''}</td>
+      <td class="num">{actions(u)}</td></tr>""" for u in users)
+    body = masthead("가입 신청을 승인·거절한다.", me, True) + f"""
+<h2 class="rule">계정</h2>
+<table><thead><tr><th>상태</th><th>아이디</th><th></th></tr></thead>
+<tbody>{rows}</tbody></table>
+<a class="back" href="/">← 목록으로</a>"""
+    return page("승인 관리 · auto_zoom", body)
 
 
 def row(j: dict) -> str:
@@ -278,18 +386,22 @@ def row(j: dict) -> str:
     dur = j.get("duration_s") or 0
     dur_s = f"{int(dur) // 60}분" if dur else "—"
     title = j.get("title") or "제목 없음"
-    stop = (f'<button class="ghost" onclick="stop(\'{j["id"]}\')">'
-            f'{"예약 취소" if j["status"] == "scheduled" else "퇴장"}</button>'
-            if j["status"] in ACTIVE else "")
+    if j["status"] in ACTIVE:
+        act = (f'<button class="ghost" onclick="stop(\'{j["id"]}\')">'
+               f'{"예약 취소" if j["status"] == "scheduled" else "퇴장"}</button>')
+    else:
+        act = (f'<button class="ghost danger" onclick="del(\'{j["id"]}\','
+               f'{_json_str(title)})">삭제</button>')
     return f"""<tr>
   <td><span class="mark {mark}"></span><span class="state">{_e(label)}</span></td>
-  <td><a href="/jobs/{j['id']}">{_e(title)}</a><span class="url mono">{_e(j['url'][:78])}</span></td>
+  <td><a href="/jobs/{j['id']}">{_e(title)}</a><span class="url mono">{_e(j['url'][:78])}</span>
+      <span class="when-sm mono">{_e(when).replace('T', ' ')[:16]}</span></td>
   <td class="num mono">{_e(when).replace('T', ' ')[:16]}</td>
   <td class="num mono">{dur_s}</td>
-  <td class="num">{stop}</td></tr>"""
+  <td class="num">{act}</td></tr>"""
 
 
-def index(jobs: list[dict]) -> str:
+def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
     rows = "".join(row(j) for j in jobs)
     table = f"""<table><thead><tr>
       <th>상태</th><th>회의</th><th>예약·생성</th><th>길이</th><th></th>
@@ -297,13 +409,18 @@ def index(jobs: list[dict]) -> str:
         '<div class="empty">아직 기록이 없다. 위에 회의 링크를 넣어 시작한다.</div>'
 
     body = masthead("줌 링크를 넣으면 봇이 카메라·마이크를 끈 채 참석해 녹음하고, "
-                    "회의가 끝나면 전문과 요약을 남긴다.") + f"""
+                    "회의가 끝나면 전문과 요약을 남긴다.", user, admin) + f"""
 <form class="compose" method="post" action="/jobs">
-  <div>
+  <div class="wide">
     <label for="url">회의 링크</label>
     <input id="url" name="url" type="url" required
            placeholder="https://us05web.zoom.us/j/000000000?pwd=…">
     <div class="hint">Zoom 회의(/j/)·웨비나(/w/) 링크 모두 가능</div>
+  </div>
+  <div>
+    <label for="title">제목</label>
+    <input id="title" name="title" type="text" placeholder="예: 주간 전략 회의" maxlength="80">
+    <div class="hint">기록 목록에 표시된다. 나중에 바꿀 수 있다</div>
   </div>
   <div>
     <label for="bot">입장 이름</label>
@@ -321,8 +438,13 @@ def index(jobs: list[dict]) -> str:
 {table}
 <script>
 async function stop(id){{
-  if(!confirm('봇을 회의에서 내보낼까요? 그때까지 녹음분으로 요약이 만들어집니다.')) return;
+  if(!confirm('봇을 회의에서 내보낼까요?\\n입장 전이라면 이 기록은 삭제됩니다.')) return;
   await fetch('/api/jobs/'+id+'/stop',{{method:'POST'}});
+  location.reload();
+}}
+async function del(id, title){{
+  if(!confirm('['+title+'] 기록을 삭제할까요?\\n녹음·원문·요약이 모두 지워지고 되돌릴 수 없습니다.')) return;
+  await fetch('/api/jobs/'+id,{{method:'DELETE'}});
   location.reload();
 }}
 const busy = {str(any(j['status'] in ACTIVE for j in jobs)).lower()};
@@ -331,17 +453,26 @@ if (busy) setTimeout(()=>location.reload(), 10000);
     return page("회의 속기록 · auto_zoom", body)
 
 
-def detail(j: dict) -> str:
+def detail(j: dict, user: str = "", admin: bool = False) -> str:
     label, mark = STATE_KO.get(j["status"], (j["status"], ""))
-    parts = [masthead(j.get("title") or "제목 없음")]
+    parts = [masthead(j.get("title") or "제목 없음", user, admin)]
     parts.append(f"""<p style="margin-top:20px">
       <span class="mark {mark}"></span><span class="state">{_e(label)}</span>
       <span class="url mono">{_e(j['url'])}</span></p>""")
     if j.get("reason"):
         parts.append(f'<p class="hint">종료 사유 · {_e(j["reason"])}</p>')
+    # 제목 고치기 — JS 없이 폼 하나로 끝낸다(저장 후 이 화면으로 되돌아온다).
+    parts.append(f"""<form class="retitle" method="post" action="/jobs/{j['id']}/title">
+      <div style="flex:1"><label for="t">제목</label>
+        <input id="t" name="title" type="text" maxlength="80" placeholder="제목 없음"
+               value="{_e(j.get('title'))}"></div>
+      <button class="ghost" type="submit">제목 저장</button></form>""")
     if j["status"] in ACTIVE:
         parts.append(f"""<p><button class="ghost" onclick="stop('{j['id']}')">
           {"예약 취소" if j["status"] == "scheduled" else "회의에서 퇴장"}</button></p>""")
+    else:
+        parts.append(f'<p><button class="ghost danger" onclick="del(\'{j["id"]}\','
+                     f'{_json_str(j.get("title") or "제목 없음")})">기록 삭제</button></p>')
 
     if j.get("summary"):
         if j.get("coresight_slug"):
@@ -364,8 +495,14 @@ def detail(j: dict) -> str:
     parts.append('<a class="back" href="/">← 목록으로</a>')
     parts.append(f"""<script>
 async function stop(id){{
-  if(!confirm('봇을 회의에서 내보낼까요?')) return;
-  await fetch('/api/jobs/'+id+'/stop',{{method:'POST'}}); location.reload();
+  if(!confirm('봇을 회의에서 내보낼까요?\\n입장 전이라면 이 기록은 삭제됩니다.')) return;
+  await fetch('/api/jobs/'+id+'/stop',{{method:'POST'}});
+  location.href = '/';
+}}
+async function del(id, title){{
+  if(!confirm('['+title+'] 기록을 삭제할까요?\\n녹음·원문·요약이 모두 지워지고 되돌릴 수 없습니다.')) return;
+  await fetch('/api/jobs/'+id,{{method:'DELETE'}});
+  location.href = '/';
 }}
 async function askAI(id){{
   const box = document.getElementById('q');
