@@ -215,6 +215,12 @@ def autotitle(job_id: str, summary: str, log) -> str:
     return title
 
 
+def _purge_files(job_id: str, wav: str | Path | None) -> None:
+    for p in (wav, config.DATA / "transcripts" / f"{job_id}.txt"):
+        if p:
+            Path(p).unlink(missing_ok=True)
+
+
 def delete_job(job_id: str) -> bool:
     """기록·녹음·전사를 완전히 지운다. 되돌릴 수 없다."""
     job = get_job(job_id)
@@ -222,9 +228,7 @@ def delete_job(job_id: str) -> bool:
         return False
     with _db_lock, _conn() as c:
         c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
-    for p in (job.get("wav_path"), config.DATA / "transcripts" / f"{job_id}.txt"):
-        if p:
-            Path(p).unlink(missing_ok=True)
+    _purge_files(job_id, job.get("wav_path"))
     print(f"{job_id[:8]} 기록 삭제됨", flush=True)
     return True
 
@@ -294,26 +298,11 @@ def run_job(job_id: str) -> None:
                     ended_at=datetime.now().isoformat(timespec="seconds"))
             return
 
-        _update(job_id, status="transcribing")
         log("남은 구간 전사 마무리")
         segments = live.finish()
-        if segments:
-            res = {"segments": segments,
-                   "text": "\n".join(s["text"] for s in segments if s["text"])}
-        else:   # 실시간 전사가 아무것도 못 건졌으면 통째로 다시 돌린다(안전망)
+        if not segments:   # 실시간 전사가 아무것도 못 건졌으면 통째로 다시 돌린다(안전망)
             log("실시간 전사 결과 없음 — 전체 파일로 재시도")
-            res = stt.transcribe(wav, log)
-        transcript = stt.format_transcript(res)
-        (config.DATA / "transcripts" / f"{job_id}.txt").write_text(transcript, encoding="utf-8")
-        _update(job_id, transcript=transcript)
-        log(f"전사 완료: {len(res['segments'])}개 구간 / {len(transcript):,}자")
-
-        _update(job_id, status="summarizing")
-        summary = summarize.summarize(res["text"], log)
-        _update(job_id, summary=summary, status="done",
-                ended_at=datetime.now().isoformat(timespec="seconds"))
-        log("완료")
-        autotitle(job_id, summary, log)   # 요약을 먼저 확정한 뒤에 건드린다
+        _wrap_up(job_id, wav, log, segments)
 
     except Exception as e:  # noqa: BLE001
         log(f"실패: {type(e).__name__}: {e}")
@@ -323,8 +312,64 @@ def run_job(job_id: str) -> None:
         _stop_flags.pop(job_id, None)
         if live is not None:       # 어떤 경로로 끝나든 워커를 남기지 않는다
             live.cancel()
-        if not get_job(job_id):    # 중지로 기록이 삭제됐으면 그 뒤 녹음된 파일도 남기지 않는다
-            wav.unlink(missing_ok=True)
+        if not get_job(job_id):    # 중지로 기록이 삭제됐으면 그 뒤 남은 파일도 남기지 않는다
+            _purge_files(job_id, wav)
+
+
+def _wrap_up(job_id: str, wav: Path, log, segments: list[dict] | None = None) -> None:
+    """전사 → 요약 → 제목. 회의 봇과 직접 녹음이 함께 쓰는 뒷단.
+
+    segments 가 있으면(회의 중 실시간 전사분) 그대로 쓰고, 없으면 wav 를 통째로 돌린다.
+    """
+    _update(job_id, status="transcribing")
+    res = ({"segments": segments,
+            "text": "\n".join(s["text"] for s in segments if s["text"])}
+           if segments else stt.transcribe(wav, log))
+    transcript = stt.format_transcript(res)
+    (config.DATA / "transcripts" / f"{job_id}.txt").write_text(transcript, encoding="utf-8")
+    _update(job_id, transcript=transcript)
+    log(f"전사 완료: {len(res['segments'])}개 구간 / {len(transcript):,}자")
+
+    _update(job_id, status="summarizing")
+    summary = summarize.summarize(res["text"], log)
+    _update(job_id, summary=summary, status="done",
+            ended_at=datetime.now().isoformat(timespec="seconds"))
+    log("완료")
+    autotitle(job_id, summary, log)   # 요약을 먼저 확정한 뒤에 건드린다
+
+
+def create_recording_job(src: Path, title: str = "") -> str:
+    """폰·브라우저에서 올라온 녹음 파일 하나를 전사→요약까지 돌린다(회의 URL 이 없다)."""
+    init_db()
+    job_id = uuid.uuid4().hex
+    wav = config.DATA / "audio" / f"{job_id}.wav"
+    with _db_lock, _conn() as c:
+        c.execute("INSERT INTO jobs (id,url,title,status,created_at,wav_path) "
+                  "VALUES (?,?,?,?,?,?)",
+                  (job_id, "", (title or "").strip()[:80], "transcribing",
+                   datetime.now().isoformat(timespec="seconds"), str(wav)))
+    threading.Thread(target=_run_recording, args=(job_id, src, wav), daemon=True).start()
+    return job_id
+
+
+def _run_recording(job_id: str, src: Path, wav: Path) -> None:
+    log = lambda m: append_log(job_id, m)  # noqa: E731
+    try:
+        log(f"녹음 파일 접수 — {src.stat().st_size / 1e6:.1f}MB")
+        # 폰은 m4a, 브라우저는 webm/opus 로 올린다 → ASR 규격(16k 모노 wav)으로 맞춘다.
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+                        "-ar", "16000", "-ac", "1", str(wav)], check=True)
+        src.unlink(missing_ok=True)
+        _update(job_id, duration_s=chunker.duration_s(wav))
+        _wrap_up(job_id, wav, log)
+    except Exception as e:  # noqa: BLE001
+        log(f"실패: {type(e).__name__}: {e}")
+        _update(job_id, status="failed", reason=f"{type(e).__name__}: {e}",
+                ended_at=datetime.now().isoformat(timespec="seconds"))
+    finally:
+        src.unlink(missing_ok=True)
+        if not get_job(job_id):    # 처리 중에 삭제됐으면 뒤늦게 쓴 파일도 남기지 않는다
+            _purge_files(job_id, wav)
 
 
 if __name__ == "__main__":   # CLI: python3 -m app.jobs <회의URL>

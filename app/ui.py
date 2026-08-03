@@ -91,6 +91,15 @@ a:hover{border-bottom-color:var(--accent);color:var(--accent)}
 .url{color:var(--ink-3);font-size:12px;word-break:break-all;display:block;margin-top:3px}
 .when-sm{display:none}   /* 좁은 화면에서만 제목 아래로 내려오는 날짜 (아래 미디어쿼리) */
 
+.rec{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:22px 0;
+  border-bottom:1px solid var(--rule)}
+.rec input{flex:1;min-width:200px;padding:10px 2px;border:0;
+  border-bottom:1px solid var(--ink-2);background:transparent;color:var(--ink);
+  font-family:inherit;font-size:15px;min-height:44px}
+#rectime{font-size:22px;color:var(--ink-3);min-width:76px}
+#rectime.on{color:var(--accent)}
+button.recording{background:var(--accent);border-color:var(--accent)}
+
 .empty{padding:56px 0;text-align:center;color:var(--ink-3)}
 .empty::before{content:"—";display:block;font-size:24px;margin-bottom:8px;color:var(--rule)}
 
@@ -386,7 +395,8 @@ def row(j: dict) -> str:
     dur = j.get("duration_s") or 0
     dur_s = f"{int(dur) // 60}분" if dur else "—"
     title = j.get("title") or "제목 없음"
-    if j["status"] in ACTIVE:
+    # 회의 봇 잡만 '퇴장' 이 뜻이 있다 — 직접 녹음엔 나갈 회의가 없다.
+    if j["status"] in ACTIVE and j.get("url"):
         act = (f'<button class="ghost" onclick="stop(\'{j["id"]}\')">'
                f'{"예약 취소" if j["status"] == "scheduled" else "퇴장"}</button>')
     else:
@@ -394,7 +404,8 @@ def row(j: dict) -> str:
                f'{_json_str(title)})">삭제</button>')
     return f"""<tr>
   <td><span class="mark {mark}"></span><span class="state">{_e(label)}</span></td>
-  <td><a href="/jobs/{j['id']}">{_e(title)}</a><span class="url mono">{_e(j['url'][:78])}</span>
+  <td><a href="/jobs/{j['id']}">{_e(title)}</a>
+      <span class="url mono">{_e(j['url'][:78]) if j.get('url') else '직접 녹음'}</span>
       <span class="when-sm mono">{_e(when).replace('T', ' ')[:16]}</span></td>
   <td class="num mono">{_e(when).replace('T', ' ')[:16]}</td>
   <td class="num mono">{dur_s}</td>
@@ -408,8 +419,8 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
     </tr></thead><tbody>{rows}</tbody></table>""" if jobs else \
         '<div class="empty">아직 기록이 없다. 위에 회의 링크를 넣어 시작한다.</div>'
 
-    body = masthead("줌 링크를 넣으면 봇이 카메라·마이크를 끈 채 참석해 녹음하고, "
-                    "회의가 끝나면 전문과 요약을 남긴다.", user, admin) + f"""
+    body = masthead("줌 링크를 넣으면 봇이 카메라·마이크를 끈 채 참석해 녹음한다. "
+                    "대면 회의는 직접 녹음하면 된다 — 둘 다 전문과 요약을 남긴다.", user, admin) + f"""
 <form class="compose" method="post" action="/jobs">
   <div class="wide">
     <label for="url">회의 링크</label>
@@ -434,9 +445,59 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
   </div>
   <button class="primary" type="submit">봇 보내기</button>
 </form>
+<h2 class="rule">직접 녹음</h2>
+<div class="rec">
+  <button id="recbtn" class="primary" onclick="toggleRec()">● 녹음 시작</button>
+  <span id="rectime" class="mono">00:00</span>
+  <input id="rectitle" type="text" maxlength="80" placeholder="제목(선택)">
+</div>
+<div class="hint">이 기기의 마이크로 바로 녹음한다. 정지하면 전사·요약·질의응답까지 그대로 이어진다.</div>
 <h2 class="rule">기록</h2>
 {table}
 <script>
+let mr = null, chunks = [], t0 = 0, timer = null;
+function recIdle(text){{
+  const b = document.getElementById('recbtn');
+  b.disabled = false; b.textContent = text || '● 녹음 시작'; b.classList.remove('recording');
+  document.getElementById('rectime').classList.remove('on');
+}}
+async function toggleRec(){{
+  if (mr && mr.state === 'recording') {{ mr.stop(); return; }}
+  let stream;
+  try {{
+    stream = await navigator.mediaDevices.getUserMedia({{audio:true}});
+  }} catch (e) {{ alert('마이크를 쓸 수 없습니다.\\n' + e); return; }}
+  chunks = [];
+  mr = new MediaRecorder(stream, {{audioBitsPerSecond: 32000}});
+  mr.ondataavailable = e => {{ if (e.data && e.data.size) chunks.push(e.data); }};
+  mr.onstop = async () => {{
+    clearInterval(timer);
+    stream.getTracks().forEach(t => t.stop());
+    const btn = document.getElementById('recbtn');
+    btn.disabled = true; btn.textContent = '올리는 중…'; btn.classList.remove('recording');
+    const type = mr.mimeType || 'audio/webm';
+    const fd = new FormData();
+    fd.append('audio', new Blob(chunks, {{type}}), type.includes('mp4') ? 'rec.m4a' : 'rec.webm');
+    fd.append('title', document.getElementById('rectitle').value || '');
+    try {{
+      const r = await fetch('/api/record', {{method:'POST', body: fd}});
+      const d = await r.json();
+      if (d.ok) {{ location.href = '/jobs/' + d.id; return; }}
+      alert('업로드 실패: ' + (d.error || r.status));
+    }} catch (e) {{ alert('업로드 실패: ' + e); }}
+    recIdle('● 다시 녹음');
+  }};
+  mr.start(5000);            // 5초 조각 — 브라우저가 통짜 버퍼를 안고 있지 않게
+  t0 = Date.now();
+  timer = setInterval(() => {{
+    const s = (Date.now() - t0) / 1000 | 0;
+    document.getElementById('rectime').textContent =
+      ('0' + (s / 60 | 0)).slice(-2) + ':' + ('0' + s % 60).slice(-2);
+  }}, 1000);
+  const btn = document.getElementById('recbtn');
+  btn.textContent = '■ 녹음 정지'; btn.classList.add('recording');
+  document.getElementById('rectime').classList.add('on');
+}}
 async function stop(id){{
   if(!confirm('봇을 회의에서 내보낼까요?\\n입장 전이라면 이 기록은 삭제됩니다.')) return;
   await fetch('/api/jobs/'+id+'/stop',{{method:'POST'}});
@@ -448,7 +509,8 @@ async function del(id, title){{
   location.reload();
 }}
 const busy = {str(any(j['status'] in ACTIVE for j in jobs)).lower()};
-if (busy) setTimeout(()=>location.reload(), 10000);
+// 진행 중인 잡이 있으면 자동 갱신하되, 녹음 중엔 절대 새로고침하지 않는다(녹음이 죽는다).
+if (busy) setInterval(()=>{{ if(!(mr && mr.state === 'recording')) location.reload(); }}, 10000);
 </script>"""
     return page("회의 속기록 · auto_zoom", body)
 
@@ -458,7 +520,7 @@ def detail(j: dict, user: str = "", admin: bool = False) -> str:
     parts = [masthead(j.get("title") or "제목 없음", user, admin)]
     parts.append(f"""<p style="margin-top:20px">
       <span class="mark {mark}"></span><span class="state">{_e(label)}</span>
-      <span class="url mono">{_e(j['url'])}</span></p>""")
+      <span class="url mono">{_e(j['url']) if j.get('url') else '직접 녹음'}</span></p>""")
     if j.get("reason"):
         parts.append(f'<p class="hint">종료 사유 · {_e(j["reason"])}</p>')
     # 제목 고치기 — JS 없이 폼 하나로 끝낸다(저장 후 이 화면으로 되돌아온다).
@@ -467,7 +529,7 @@ def detail(j: dict, user: str = "", admin: bool = False) -> str:
         <input id="t" name="title" type="text" maxlength="80" placeholder="제목 없음"
                value="{_e(j.get('title'))}"></div>
       <button class="ghost" type="submit">제목 저장</button></form>""")
-    if j["status"] in ACTIVE:
+    if j["status"] in ACTIVE and j.get("url"):
         parts.append(f"""<p><button class="ghost" onclick="stop('{j['id']}')">
           {"예약 취소" if j["status"] == "scheduled" else "회의에서 퇴장"}</button></p>""")
     else:

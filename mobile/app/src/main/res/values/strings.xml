@@ -5,4 +5,5 @@
     <string name="error_message">네트워크 연결을 확인한 후\n다시 시도해주세요.</string>
     <string name="retry">다시 시도</string>
     <string name="offline_icon_desc">오프라인 아이콘</string>
+    <string name="widget_desc">한 번 눌러 녹음, 다시 눌러 정지 — 전사·요약은 서버가 이어서 한다</string>
 </resources>

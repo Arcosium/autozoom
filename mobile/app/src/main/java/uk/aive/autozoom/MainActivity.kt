@@ -1,17 +1,21 @@
 package uk.aive.autozoom
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -20,7 +24,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -45,6 +51,10 @@ class MainActivity : AppCompatActivity() {
 
     private var lastBackPressTime: Long = 0L
     private var backPressToast: Toast? = null
+
+    /** 위젯은 권한을 물어볼 수 없다 — 마이크·알림 권한은 앱이 떠 있을 때 미리 받아 둔다. */
+    private val askPermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     companion object {
         private const val WEB_URL = "https://autozoom.ai-ve.uk"
@@ -74,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         setupPullToRefresh()
         setupBackNavigation()
+        requestRecordingPermissions()
         binding.btnRetry.setOnClickListener {
             if (isNetworkAvailable()) { hideErrorState(); loadUrl(WEB_URL) }
         }
@@ -152,6 +163,19 @@ class MainActivity : AppCompatActivity() {
         binding.webView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
             binding.swipeRefresh.isEnabled = scrollY == 0
         }
+    }
+
+    private fun hasMic() = ContextCompat.checkSelfPermission(
+        this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun requestRecordingPermissions() {
+        val need = mutableListOf<String>()
+        if (!hasMic()) need += Manifest.permission.RECORD_AUDIO
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            need += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (need.isNotEmpty()) askPermissions.launch(need.toTypedArray())
     }
 
     private fun setupBackNavigation() {
@@ -247,6 +271,17 @@ class MainActivity : AppCompatActivity() {
             super.onProgressChanged(view, newProgress)
             binding.progressBar.progress = newProgress
             if (newProgress >= 100) binding.progressBar.visibility = View.GONE
+        }
+
+        /** 웹의 '직접 녹음' 버튼(getUserMedia)에 마이크를 내준다 — 앱이 이미 받은 권한 한도 안에서만. */
+        override fun onPermissionRequest(request: PermissionRequest) {
+            val mic = PermissionRequest.RESOURCE_AUDIO_CAPTURE
+            if (request.resources.contains(mic) && hasMic()) {
+                request.grant(arrayOf(mic))
+            } else {
+                request.deny()
+                requestRecordingPermissions()
+            }
         }
     }
 }

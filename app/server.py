@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import os
+import re
+import uuid
+from pathlib import Path
 
-from fastapi import Body, FastAPI, Form, HTTPException, Request
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -111,6 +114,28 @@ def create(url: str = Form(...), scheduled_at: str = Form(""),
         raise HTTPException(400, "Zoom 링크가 아니다")
     jobs.create_job(url, title.strip(), scheduled_at.strip() or None, bot_name)
     return RedirectResponse("/", status_code=303)
+
+
+SUFFIX_OK = re.compile(r"\.(webm|m4a|mp4|ogg|opus|wav|mp3|aac|3gp)$")
+
+
+@app.post("/api/record")
+async def record(audio: UploadFile = File(...), title: str = Form("")) -> JSONResponse:
+    """브라우저 녹음 버튼·앱 위젯이 올린 녹음 파일 하나 → 전사·요약.
+
+    파일은 통째로 메모리에 올리지 않고 흘려 쓴다(회의 두 시간이면 수십 MB 다).
+    """
+    suffix = Path(audio.filename or "").suffix.lower()
+    src = config.DATA / "audio" / f"up_{uuid.uuid4().hex}{suffix if SUFFIX_OK.match(suffix) else '.bin'}"
+    size = 0
+    with src.open("wb") as f:
+        while chunk := await audio.read(1 << 20):
+            size += len(chunk)
+            f.write(chunk)
+    if size < 8000:                      # 사실상 빈 녹음 — 잡을 만들지 않는다
+        src.unlink(missing_ok=True)
+        return JSONResponse({"ok": False, "error": "녹음이 너무 짧다"}, status_code=400)
+    return JSONResponse({"ok": True, "id": jobs.create_recording_job(src, title)})
 
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)
