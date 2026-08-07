@@ -116,6 +116,18 @@ def create(url: str = Form(...), scheduled_at: str = Form(""),
     return RedirectResponse("/", status_code=303)
 
 
+@app.post("/media")
+def create_media(url: str = Form(...), title: str = Form("")) -> RedirectResponse:
+    """유튜브·동영상 링크 → 오디오 내려받기 → 전사·요약."""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "링크가 아니다")
+    if "zoom.us" in url:
+        raise HTTPException(400, "Zoom 링크는 '줌 봇' 탭에서 넣는다")
+    jobs.create_media_job(url, title.strip())
+    return RedirectResponse("/", status_code=303)
+
+
 SUFFIX_OK = re.compile(r"\.(webm|m4a|mp4|ogg|opus|wav|mp3|aac|3gp)$")
 
 

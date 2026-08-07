@@ -39,6 +39,13 @@ header.masthead{border-bottom:2px solid var(--ink);margin-bottom:0;padding:40px 
 .masthead .meta{float:right;text-align:right;color:var(--ink-3);font-size:12px;
   letter-spacing:.14em;text-transform:uppercase}
 
+nav.tabs{display:flex;border-bottom:1px solid var(--rule)}
+nav.tabs button{background:transparent;border:0;border-radius:0;min-height:48px;
+  padding:14px 2px;margin:0 28px -1px 0;font-size:13px;letter-spacing:.14em;
+  font-weight:600;color:var(--ink-3);border-bottom:2px solid transparent}
+nav.tabs button:hover{color:var(--accent)}
+nav.tabs button.on{color:var(--ink);border-bottom-color:var(--accent)}
+
 h2.rule{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);
   font-weight:600;margin:40px 0 0;padding-bottom:6px;border-bottom:1px solid var(--rule);
   display:flex;align-items:baseline;justify-content:space-between;gap:16px}
@@ -182,10 +189,17 @@ FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
 STATE_KO = {
     "scheduled": ("대기 예약", "wait"), "queued": ("입장 준비", "live"),
     "joining": ("입장 중", "live"), "recording": ("녹음 중", "live"),
+    "downloading": ("받는 중", "live"),
     "transcribing": ("전사 중", "live"), "summarizing": ("요약 중", "live"),
     "done": ("완료", "done"), "failed": ("실패", "fail"), "stopped": ("중단", "fail"),
 }
-ACTIVE = {"scheduled", "queued", "joining", "recording", "transcribing", "summarizing"}
+ACTIVE = {"scheduled", "queued", "joining", "recording", "downloading",
+          "transcribing", "summarizing"}
+
+
+def _is_zoom(j: dict) -> bool:
+    """퇴장·예약취소 버튼은 줌 봇 잡에만 뜻이 있다 — 링크 전사·직접 녹음엔 나갈 회의가 없다."""
+    return "zoom.us" in (j.get("url") or "")
 
 
 def _e(s) -> str:
@@ -395,8 +409,7 @@ def row(j: dict) -> str:
     dur = j.get("duration_s") or 0
     dur_s = f"{int(dur) // 60}분" if dur else "—"
     title = j.get("title") or "제목 없음"
-    # 회의 봇 잡만 '퇴장' 이 뜻이 있다 — 직접 녹음엔 나갈 회의가 없다.
-    if j["status"] in ACTIVE and j.get("url"):
+    if j["status"] in ACTIVE and _is_zoom(j):
         act = (f'<button class="ghost" onclick="stop(\'{j["id"]}\')">'
                f'{"예약 취소" if j["status"] == "scheduled" else "퇴장"}</button>')
     else:
@@ -419,42 +432,75 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
     </tr></thead><tbody>{rows}</tbody></table>""" if jobs else \
         '<div class="empty">아직 기록이 없다. 위에 회의 링크를 넣어 시작한다.</div>'
 
-    body = masthead("줌 링크를 넣으면 봇이 카메라·마이크를 끈 채 참석해 녹음한다. "
-                    "대면 회의는 직접 녹음하면 된다 — 둘 다 전문과 요약을 남긴다.", user, admin) + f"""
-<form class="compose" method="post" action="/jobs">
-  <div class="wide">
-    <label for="url">회의 링크</label>
-    <input id="url" name="url" type="url" required
-           placeholder="https://us05web.zoom.us/j/000000000?pwd=…">
-    <div class="hint">Zoom 회의(/j/)·웨비나(/w/) 링크 모두 가능</div>
+    body = masthead("이 기기로 녹음하거나, 줌에 봇을 보내거나, 영상 링크를 넣는다. "
+                    "어느 쪽이든 전문과 요약, 질의응답이 남는다.", user, admin) + f"""
+<nav class="tabs">
+  <button id="tb-rec" class="on" onclick="showTab('rec')">녹음</button>
+  <button id="tb-zoom" onclick="showTab('zoom')">줌 봇</button>
+  <button id="tb-media" onclick="showTab('media')">링크 전사</button>
+</nav>
+<section id="tab-rec">
+  <div class="rec">
+    <button id="recbtn" class="primary" onclick="toggleRec()">● 녹음 시작</button>
+    <span id="rectime" class="mono">00:00</span>
+    <input id="rectitle" type="text" maxlength="80" placeholder="제목(선택)">
   </div>
-  <div>
-    <label for="title">제목</label>
-    <input id="title" name="title" type="text" placeholder="예: 주간 전략 회의" maxlength="80">
-    <div class="hint">기록 목록에 표시된다. 나중에 바꿀 수 있다</div>
-  </div>
-  <div>
-    <label for="bot">입장 이름</label>
-    <input id="bot" name="bot_name" type="text" placeholder="회의록봇" maxlength="30">
-    <div class="hint">참가자에게 보이는 이름</div>
-  </div>
-  <div>
-    <label for="at">입장 시각</label>
-    <input id="at" name="scheduled_at" type="datetime-local">
-    <div class="hint">비우면 즉시 입장</div>
-  </div>
-  <button class="primary" type="submit">봇 보내기</button>
-</form>
-<h2 class="rule">직접 녹음</h2>
-<div class="rec">
-  <button id="recbtn" class="primary" onclick="toggleRec()">● 녹음 시작</button>
-  <span id="rectime" class="mono">00:00</span>
-  <input id="rectitle" type="text" maxlength="80" placeholder="제목(선택)">
-</div>
-<div class="hint">이 기기의 마이크로 바로 녹음한다. 정지하면 전사·요약·질의응답까지 그대로 이어진다.</div>
+  <div class="hint">이 기기의 마이크로 바로 녹음한다. 정지하면 전사·요약·질의응답까지 그대로 이어진다.</div>
+</section>
+<section id="tab-zoom" hidden>
+  <form class="compose" method="post" action="/jobs">
+    <div class="wide">
+      <label for="url">회의 링크</label>
+      <input id="url" name="url" type="url" required
+             placeholder="https://us05web.zoom.us/j/000000000?pwd=…">
+      <div class="hint">Zoom 회의(/j/)·웨비나(/w/) 링크 모두 가능. 봇이 카메라·마이크를 끈 채 참석해 녹음한다</div>
+    </div>
+    <div>
+      <label for="title">제목</label>
+      <input id="title" name="title" type="text" placeholder="예: 주간 전략 회의" maxlength="80">
+      <div class="hint">기록 목록에 표시된다. 나중에 바꿀 수 있다</div>
+    </div>
+    <div>
+      <label for="bot">입장 이름</label>
+      <input id="bot" name="bot_name" type="text" placeholder="회의록봇" maxlength="30">
+      <div class="hint">참가자에게 보이는 이름</div>
+    </div>
+    <div>
+      <label for="at">입장 시각</label>
+      <input id="at" name="scheduled_at" type="datetime-local">
+      <div class="hint">비우면 즉시 입장</div>
+    </div>
+    <button class="primary" type="submit">봇 보내기</button>
+  </form>
+</section>
+<section id="tab-media" hidden>
+  <form class="compose" method="post" action="/media">
+    <div class="wide">
+      <label for="murl">영상 링크</label>
+      <input id="murl" name="url" type="url" required
+             placeholder="https://www.youtube.com/watch?v=…">
+      <div class="hint">유튜브·대부분의 동영상 사이트·mp4 직접 링크 — 소리만 내려받아 전사한다</div>
+    </div>
+    <div>
+      <label for="mtitle">제목</label>
+      <input id="mtitle" name="title" type="text" placeholder="비우면 영상 제목" maxlength="80">
+      <div class="hint">비우면 영상 제목을 그대로 쓴다</div>
+    </div>
+    <button class="primary" type="submit">전사 시작</button>
+  </form>
+</section>
 <h2 class="rule">기록</h2>
 {table}
 <script>
+function showTab(k){{
+  for (const t of ['rec','zoom','media']){{
+    document.getElementById('tab-'+t).hidden = t !== k;
+    document.getElementById('tb-'+t).classList.toggle('on', t === k);
+  }}
+  history.replaceState(null, '', location.pathname + '#' + k);
+}}
+// 해시로 탭을 기억한다 — 10초 자동 새로고침에도 유지되고, 링크로 공유해도 그 탭이 열린다.
+showTab(['zoom','media'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'rec');
 let mr = null, chunks = [], t0 = 0, timer = null;
 function recIdle(text){{
   const b = document.getElementById('recbtn');
@@ -529,7 +575,7 @@ def detail(j: dict, user: str = "", admin: bool = False) -> str:
         <input id="t" name="title" type="text" maxlength="80" placeholder="제목 없음"
                value="{_e(j.get('title'))}"></div>
       <button class="ghost" type="submit">제목 저장</button></form>""")
-    if j["status"] in ACTIVE and j.get("url"):
+    if j["status"] in ACTIVE and _is_zoom(j):
         parts.append(f"""<p><button class="ghost" onclick="stop('{j['id']}')">
           {"예약 취소" if j["status"] == "scheduled" else "회의에서 퇴장"}</button></p>""")
     else:

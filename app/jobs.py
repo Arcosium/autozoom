@@ -372,6 +372,73 @@ def _run_recording(job_id: str, src: Path, wav: Path) -> None:
             _purge_files(job_id, wav)
 
 
+def create_media_job(url: str, title: str = "") -> str:
+    """유튜브·동영상 링크의 소리만 내려받아 전사→요약까지 돌린다."""
+    init_db()
+    job_id = uuid.uuid4().hex
+    wav = config.DATA / "audio" / f"{job_id}.wav"
+    with _db_lock, _conn() as c:
+        c.execute("INSERT INTO jobs (id,url,title,status,created_at,wav_path) "
+                  "VALUES (?,?,?,?,?,?)",
+                  (job_id, url, (title or "").strip()[:80], "downloading",
+                   datetime.now().isoformat(timespec="seconds"), str(wav)))
+    threading.Thread(target=_run_media, args=(job_id, url, wav), daemon=True).start()
+    return job_id
+
+
+def _download_media(job_id: str, url: str, log) -> Path:
+    """yt-dlp 로 오디오를 내려받는다(유튜브·대부분의 영상 사이트·mp4 직링크).
+
+    제목을 안 넣은 잡은 영상 제목을 그대로 물려받는다 — LLM 추측보다 낫다.
+    """
+    import yt_dlp
+
+    tmpl = config.DATA / "audio" / f"dl_{job_id}"
+    opts = {"format": "bestaudio/best", "outtmpl": f"{tmpl}.%(ext)s",
+            "noplaylist": True, "quiet": True, "no_warnings": True,
+            "noprogress": True}   # quiet 만으로는 진행바가 stdout(서비스 로그)에 찍힌다
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if info.get("is_live"):
+            raise ValueError("라이브 스트림은 끝나야 전사할 수 있다")
+        dur = info.get("duration") or 0
+        if dur > config.MAX_MEETING_S:
+            raise ValueError(f"영상이 {dur / 3600:.1f}시간 — "
+                             f"한도 {config.MAX_MEETING_S // 3600}시간을 넘는다")
+        job = get_job(job_id)
+        if job and not (job.get("title") or "").strip() and info.get("title"):
+            set_title(job_id, info["title"])
+        log(f"내려받기 시작 — {info.get('title') or url}"
+            + (f" ({int(dur) // 60}분)" if dur else ""))
+        ydl.download([url])
+    files = sorted((config.DATA / "audio").glob(f"dl_{job_id}.*"))
+    if not files:
+        raise RuntimeError("내려받은 파일이 없다")
+    return files[0]
+
+
+def _run_media(job_id: str, url: str, wav: Path) -> None:
+    log = lambda m: append_log(job_id, m)  # noqa: E731
+    try:
+        src = _download_media(job_id, url, log)
+        log(f"내려받기 완료 — {src.stat().st_size / 1e6:.1f}MB")
+        # 직링크 mp4 처럼 영상이 섞여 와도 -vn 으로 소리만 ASR 규격(16k 모노)으로 뽑는다.
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+                        "-vn", "-ar", "16000", "-ac", "1", str(wav)], check=True)
+        _update(job_id, duration_s=chunker.duration_s(wav))
+        _wrap_up(job_id, wav, log)
+    except Exception as e:  # noqa: BLE001
+        log(f"실패: {type(e).__name__}: {e}")
+        _update(job_id, status="failed", reason=f"{type(e).__name__}: {e}",
+                ended_at=datetime.now().isoformat(timespec="seconds"))
+    finally:
+        for p in (config.DATA / "audio").glob(f"dl_{job_id}.*"):
+            p.unlink(missing_ok=True)
+        if not get_job(job_id):    # 처리 중에 삭제됐으면 뒤늦게 쓴 파일도 남기지 않는다
+            _purge_files(job_id, wav)
+
+
 if __name__ == "__main__":   # CLI: python3 -m app.jobs <회의URL>
     import sys
 
