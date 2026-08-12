@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import threading
@@ -373,7 +374,7 @@ def _run_recording(job_id: str, src: Path, wav: Path) -> None:
 
 
 def create_media_job(url: str, title: str = "") -> str:
-    """유튜브·동영상 링크의 소리만 내려받아 전사→요약까지 돌린다."""
+    """영상 또는 라이브 링크를 녹음하면서 전사하고, 끝나면 요약한다."""
     init_db()
     job_id = uuid.uuid4().hex
     wav = config.DATA / "audio" / f"{job_id}.wav"
@@ -401,7 +402,7 @@ def _download_media(job_id: str, url: str, log) -> Path:
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
         if info.get("is_live"):
-            raise ValueError("라이브 스트림은 끝나야 전사할 수 있다")
+            raise ValueError("현재 라이브 중인 영상이다")
         dur = info.get("duration") or 0
         if dur > config.MAX_MEETING_S:
             raise ValueError(f"영상이 {dur / 3600:.1f}시간 — "
@@ -418,9 +419,112 @@ def _download_media(job_id: str, url: str, log) -> Path:
     return files[0]
 
 
+def _live_info(url: str) -> dict:
+    """라이브 오디오 원본 URL을 구한다. 방송 전이면 yt-dlp가 예외를 낸다."""
+    import yt_dlp
+
+    opts = {"format": "bestaudio/best", "noplaylist": True, "quiet": True,
+            "no_warnings": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def _record_live(job_id: str, url: str, wav: Path, log) -> bool:
+    """방송 시작을 기다렸다가 ffmpeg로 저장하며 실시간 전사한다.
+
+    라이브가 아니면 False를 돌려 일반 영상 다운로드 경로로 넘긴다.
+    """
+    deadline = time.time() + config.WAIT_START_S
+    announced = False
+    info: dict | None = None
+    while time.time() < deadline:
+        if not get_job(job_id):
+            return True
+        if _stop_flags.get(job_id):
+            raise RuntimeError("사용자 중단")
+        try:
+            info = _live_info(url)
+            if not info.get("is_live"):
+                return False
+            break
+        except Exception as e:  # yt-dlp: "This live event will begin in N minutes"
+            msg = str(e).lower()
+            if not any(x in msg for x in ("live event will begin", "premieres in",
+                                           "not currently live", "scheduled for")):
+                raise
+            if not announced:
+                _update(job_id, status="scheduled")
+                log("라이브 시작 대기 중 — 방송이 열리면 자동으로 녹음한다")
+                announced = True
+            time.sleep(15)
+    if not info:
+        raise TimeoutError("라이브 시작 대기 시간이 지났다")
+
+    if not (get_job(job_id) or {}).get("title") and info.get("title"):
+        set_title(job_id, info["title"])
+    stream_url = info.get("url")
+    if not stream_url:
+        raise RuntimeError("라이브 오디오 주소를 얻지 못했다")
+
+    headers = info.get("http_headers") or {}
+    header_text = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    cmd = ["ffmpeg", "-y", "-loglevel", "warning", "-reconnect", "1",
+           "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
+    if header_text:
+        cmd += ["-headers", header_text]
+    cmd += ["-i", stream_url, "-vn", "-ar", "16000", "-ac", "1", str(wav)]
+    # 라이브 HLS는 끊긴 조각마다 경고를 많이 낸다. PIPE를 읽지 않으면 약 64KB 뒤
+    # ffmpeg 자체가 멈추므로, 진행 로그에 필요한 종료 코드만 남기고 출력을 버린다.
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            text=True, env=dict(os.environ))
+    live = live_stt.LiveTranscriber(
+        wav, log,
+        on_progress=lambda segs: _update(
+            job_id, transcript=stt.format_transcript({"segments": segs})))
+    live.start()
+    _update(job_id, status="recording")
+    log(f"라이브 녹음 시작 — {info.get('title') or url}")
+    reason = "방송 종료"
+    try:
+        started = time.time()
+        while proc.poll() is None:
+            if not get_job(job_id):
+                reason = "사용자 중단"
+                proc.terminate()
+                break
+            if _stop_flags.get(job_id):
+                reason = "사용자 중단"
+                proc.terminate()
+                break
+            if time.time() - started > config.MAX_MEETING_S:
+                reason = "최대 시간 초과"
+                proc.terminate()
+                break
+            time.sleep(2)
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if proc.returncode not in (0, 255, -15):
+            raise RuntimeError(f"라이브 녹음기가 비정상 종료했습니다 ({proc.returncode})")
+        segments = live.finish()
+        duration = chunker.duration_s(wav)
+        _update(job_id, duration_s=duration, reason=reason)
+        log(f"라이브 녹음 종료: {reason} ({duration / 60:.1f}분)")
+        _wrap_up(job_id, wav, log, segments or None)
+        return True
+    finally:
+        live.cancel()
+        if proc.poll() is None:
+            proc.terminate()
+        _stop_flags.pop(job_id, None)
+
+
 def _run_media(job_id: str, url: str, wav: Path) -> None:
     log = lambda m: append_log(job_id, m)  # noqa: E731
     try:
+        if _record_live(job_id, url, wav, log):
+            return
         src = _download_media(job_id, url, log)
         log(f"내려받기 완료 — {src.stat().st_size / 1e6:.1f}MB")
         # 직링크 mp4 처럼 영상이 섞여 와도 -vn 으로 소리만 ASR 규격(16k 모노)으로 뽑는다.

@@ -10,7 +10,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, config, jobs, ui
+from . import auth, bot_login, config, jobs, links, ui
 
 app = FastAPI(title="auto_zoom", docs_url=None, redoc_url=None)
 
@@ -85,7 +85,25 @@ def signup(username: str = Form(""), password: str = Form("")) -> HTMLResponse:
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(request: Request) -> HTMLResponse:
-    return HTMLResponse(ui.admin(auth.list_users(), _require_admin(request)))
+    return HTMLResponse(ui.admin(auth.list_users(), _require_admin(request), bot_login.status()))
+
+
+@app.post("/admin/zoom-login")
+def start_bot_login(request: Request) -> RedirectResponse:
+    """Zoom 계정 로그인 창은 관리자만 열 수 있다."""
+    _require_admin(request)
+    bot_login.start()
+    return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/admin/zoom-login/otp")
+def submit_bot_login_otp(request: Request, otp: str = Form("")) -> RedirectResponse:
+    _require_admin(request)
+    try:
+        bot_login.submit_otp(otp)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return RedirectResponse("/admin", status_code=303)
 
 
 @app.post("/admin/{action}")
@@ -109,22 +127,26 @@ def index(request: Request) -> HTMLResponse:
 @app.post("/jobs")
 def create(url: str = Form(...), scheduled_at: str = Form(""),
            title: str = Form(""), bot_name: str = Form("")) -> RedirectResponse:
-    url = url.strip()
-    if "zoom.us" not in url:
-        raise HTTPException(400, "Zoom 링크가 아니다")
-    jobs.create_job(url, title.strip(), scheduled_at.strip() or None, bot_name)
+    try:
+        resolved = links.resolve_url(url)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if not links.is_zoom_url(resolved):
+        raise HTTPException(400, "이동한 최종 주소가 Zoom 링크가 아닙니다")
+    jobs.create_job(resolved, title.strip(), scheduled_at.strip() or None, bot_name)
     return RedirectResponse("/", status_code=303)
 
 
 @app.post("/media")
 def create_media(url: str = Form(...), title: str = Form("")) -> RedirectResponse:
-    """유튜브·동영상 링크 → 오디오 내려받기 → 전사·요약."""
-    url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "링크가 아니다")
-    if "zoom.us" in url:
+    """일반 영상은 내려받고, 라이브는 방송 시작부터 녹음하며 실시간 전사한다."""
+    try:
+        resolved = links.resolve_url(url)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if links.is_zoom_url(resolved):
         raise HTTPException(400, "Zoom 링크는 '줌 봇' 탭에서 넣는다")
-    jobs.create_media_job(url, title.strip())
+    jobs.create_media_job(resolved, title.strip())
     return RedirectResponse("/", status_code=303)
 
 

@@ -376,7 +376,14 @@ def notice(msg: str, ok: bool, link: str = "/login", link_text: str = "로그인
 USER_STATE_KO = {"pending": "승인 대기", "approved": "사용 중", "rejected": "거절됨"}
 
 
-def admin(users: list[dict], me: str) -> str:
+LOGIN_STATE_KO = {
+    "idle": "대기", "running": "서버에서 로그인 중", "otp_required": "인증 코드 필요",
+    "verifying": "인증 확인 중", "success": "로그인 완료", "failed": "로그인 실패",
+    "busy": "회의 봇 사용 중",
+}
+
+
+def admin(users: list[dict], me: str, bot_status: dict | None = None) -> str:
     def actions(u: dict) -> str:
         buttons = []
         if u["status"] != "approved":
@@ -395,7 +402,33 @@ def admin(users: list[dict], me: str) -> str:
       <td><span class="state">{_e(USER_STATE_KO.get(u["status"], u["status"]))}</span></td>
       <td>{_e(u["username"])}{' · 관리자' if u.get("role") == "admin" else ''}</td>
       <td class="num">{actions(u)}</td></tr>""" for u in users)
+    bot_status = bot_status or {"state": "idle", "message": "아직 로그인 작업을 시작하지 않았습니다."}
+    state = str(bot_status.get("state") or "idle")
+    state_name = LOGIN_STATE_KO.get(state, state)
+    message = _e(bot_status.get("message") or "")
+    active = state in {"running", "otp_required", "verifying"}
+    login_button = "서버에서 로그인 중" if active else (
+        "봇 계정 다시 로그인" if state == "success" else "봇 계정 로그인")
+    otp = ""
+    if state == "otp_required":
+        otp = """
+  <form class="retitle" method="post" action="/admin/zoom-login/otp">
+    <div><label for="otp">인증 코드</label>
+      <input id="otp" name="otp" type="text" inputmode="numeric" autocomplete="one-time-code"
+             pattern="[0-9]{4,8}" maxlength="8" required></div>
+    <button class="ghost" type="submit">인증 코드 전송</button>
+  </form>"""
     body = masthead("가입 신청을 승인·거절한다.", me, True) + f"""
+<h2 class="rule">Zoom 봇 계정</h2>
+<div class="rec">
+  <form method="post" action="/admin/zoom-login">
+    <button class="primary" type="submit"{' disabled' if active else ''}>{login_button}</button>
+  </form>
+  <div><span class="state">{_e(state_name)}</span>
+    <div class="hint">{message}</div>
+    <div class="hint">로그인 창은 이 기기에 뜨지 않고 Autozoom 서버의 봇 브라우저에서 처리됩니다.</div></div>
+</div>{otp}
+{'<script>setTimeout(() => location.reload(), 2500)</script>' if active else ''}
 <h2 class="rule">계정</h2>
 <table><thead><tr><th>상태</th><th>아이디</th><th></th></tr></thead>
 <tbody>{rows}</tbody></table>
@@ -409,9 +442,9 @@ def row(j: dict) -> str:
     dur = j.get("duration_s") or 0
     dur_s = f"{int(dur) // 60}분" if dur else "—"
     title = j.get("title") or "제목 없음"
-    if j["status"] in ACTIVE and _is_zoom(j):
+    if j["status"] in ACTIVE:
         act = (f'<button class="ghost" onclick="stop(\'{j["id"]}\')">'
-               f'{"예약 취소" if j["status"] == "scheduled" else "퇴장"}</button>')
+               f'{"예약 취소" if j["status"] == "scheduled" else "중지"}</button>')
     else:
         act = (f'<button class="ghost danger" onclick="del(\'{j["id"]}\','
                f'{_json_str(title)})">삭제</button>')
@@ -453,7 +486,7 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
       <label for="url">회의 링크</label>
       <input id="url" name="url" type="url" required
              placeholder="https://us05web.zoom.us/j/000000000?pwd=…">
-      <div class="hint">Zoom 회의(/j/)·웨비나(/w/) 링크 모두 가능. 봇이 카메라·마이크를 끈 채 참석해 녹음한다</div>
+      <div class="hint">Zoom 회의·웨비나와 bit.ly 같은 단축 링크도 가능. 실제 주소를 확인한 뒤 봇이 참석해 녹음한다</div>
     </div>
     <div>
       <label for="title">제목</label>
@@ -479,14 +512,14 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
       <label for="murl">영상 링크</label>
       <input id="murl" name="url" type="url" required
              placeholder="https://www.youtube.com/watch?v=…">
-      <div class="hint">유튜브·대부분의 동영상 사이트·mp4 직접 링크 — 소리만 내려받아 전사한다</div>
+      <div class="hint">일반 영상과 단축 링크는 소리를 내려받아 전사한다. 라이브는 시작을 기다렸다가 녹음하며 원문을 실시간으로 채운다</div>
     </div>
     <div>
       <label for="mtitle">제목</label>
       <input id="mtitle" name="title" type="text" placeholder="비우면 영상 제목" maxlength="80">
       <div class="hint">비우면 영상 제목을 그대로 쓴다</div>
     </div>
-    <button class="primary" type="submit">전사 시작</button>
+    <button class="primary" type="submit">녹음·전사 시작</button>
   </form>
 </section>
 <h2 class="rule">기록</h2>
@@ -545,7 +578,7 @@ async function toggleRec(){{
   document.getElementById('rectime').classList.add('on');
 }}
 async function stop(id){{
-  if(!confirm('봇을 회의에서 내보낼까요?\\n입장 전이라면 이 기록은 삭제됩니다.')) return;
+  if(!confirm('진행 중인 녹음·전사를 중지할까요?\\n시작 전이라면 이 기록은 삭제됩니다.')) return;
   await fetch('/api/jobs/'+id+'/stop',{{method:'POST'}});
   location.reload();
 }}
@@ -575,9 +608,9 @@ def detail(j: dict, user: str = "", admin: bool = False) -> str:
         <input id="t" name="title" type="text" maxlength="80" placeholder="제목 없음"
                value="{_e(j.get('title'))}"></div>
       <button class="ghost" type="submit">제목 저장</button></form>""")
-    if j["status"] in ACTIVE and _is_zoom(j):
+    if j["status"] in ACTIVE:
         parts.append(f"""<p><button class="ghost" onclick="stop('{j['id']}')">
-          {"예약 취소" if j["status"] == "scheduled" else "회의에서 퇴장"}</button></p>""")
+          {"예약 취소" if j["status"] == "scheduled" else "녹음·전사 중지"}</button></p>""")
     else:
         parts.append(f'<p><button class="ghost danger" onclick="del(\'{j["id"]}\','
                      f'{_json_str(j.get("title") or "제목 없음")})">기록 삭제</button></p>')
@@ -603,7 +636,7 @@ def detail(j: dict, user: str = "", admin: bool = False) -> str:
     parts.append('<a class="back" href="/">← 목록으로</a>')
     parts.append(f"""<script>
 async function stop(id){{
-  if(!confirm('봇을 회의에서 내보낼까요?\\n입장 전이라면 이 기록은 삭제됩니다.')) return;
+  if(!confirm('진행 중인 녹음·전사를 중지할까요?\\n시작 전이라면 이 기록은 삭제됩니다.')) return;
   await fetch('/api/jobs/'+id+'/stop',{{method:'POST'}});
   location.href = '/';
 }}

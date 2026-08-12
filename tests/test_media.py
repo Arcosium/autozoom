@@ -45,6 +45,7 @@ def _fake_download(job_id, url, log):
 
 def test_media_job_transcribes_with_video_title(monkeypatch):
     _fake_brains(monkeypatch)
+    monkeypatch.setattr(jobs, "_record_live", lambda *args, **kwargs: False)
     monkeypatch.setattr(jobs, "_download_media", _fake_download)
     j = _wait(jobs.create_media_job("https://www.youtube.com/watch?v=x"))
     assert j["status"] == "done"
@@ -59,6 +60,7 @@ def test_media_job_transcribes_with_video_title(monkeypatch):
 
 def test_media_download_failure_marks_failed(monkeypatch):
     _fake_brains(monkeypatch)
+    monkeypatch.setattr(jobs, "_record_live", lambda *args, **kwargs: False)
 
     def boom(job_id, url, log):
         raise ValueError("영상이 5.0시간 — 한도 4시간을 넘는다")
