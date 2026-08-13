@@ -340,7 +340,7 @@ def _wrap_up(job_id: str, wav: Path, log, segments: list[dict] | None = None) ->
 
 
 def create_recording_job(src: Path, title: str = "") -> str:
-    """폰·브라우저에서 올라온 녹음 파일 하나를 전사→요약까지 돌린다(회의 URL 이 없다)."""
+    """올라온 파일 하나(녹음·회의 영상)를 전사→요약까지 돌린다(회의 URL 이 없다)."""
     init_db()
     job_id = uuid.uuid4().hex
     wav = config.DATA / "audio" / f"{job_id}.wav"
@@ -356,10 +356,11 @@ def create_recording_job(src: Path, title: str = "") -> str:
 def _run_recording(job_id: str, src: Path, wav: Path) -> None:
     log = lambda m: append_log(job_id, m)  # noqa: E731
     try:
-        log(f"녹음 파일 접수 — {src.stat().st_size / 1e6:.1f}MB")
-        # 폰은 m4a, 브라우저는 webm/opus 로 올린다 → ASR 규격(16k 모노 wav)으로 맞춘다.
+        log(f"파일 접수 — {src.stat().st_size / 1e6:.1f}MB")
+        # 폰은 m4a, 브라우저는 webm/opus, 직접 올린 회의 영상은 mp4/mkv 로 온다
+        # → -vn 으로 소리만 떼어 ASR 규격(16k 모노 wav)으로 맞춘다.
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
-                        "-ar", "16000", "-ac", "1", str(wav)], check=True)
+                        "-vn", "-ar", "16000", "-ac", "1", str(wav)], check=True)
         src.unlink(missing_ok=True)
         _update(job_id, duration_s=chunker.duration_s(wav))
         _wrap_up(job_id, wav, log)

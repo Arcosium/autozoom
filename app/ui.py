@@ -39,10 +39,14 @@ header.masthead{border-bottom:2px solid var(--ink);margin-bottom:0;padding:40px 
 .masthead .meta{float:right;text-align:right;color:var(--ink-3);font-size:12px;
   letter-spacing:.14em;text-transform:uppercase}
 
-nav.tabs{display:flex;border-bottom:1px solid var(--rule)}
+/* 탭이 넷이라 좁은 폭에선 flex 가 버튼을 짓눌러 탭 이름이 두 줄로 접혔다.
+   줄이지 말고(nowrap+shrink 0) 정 모자라면 가로로 밀리게 둔다. */
+nav.tabs{display:flex;border-bottom:1px solid var(--rule);overflow-x:auto;scrollbar-width:none}
+nav.tabs::-webkit-scrollbar{display:none}
 nav.tabs button{background:transparent;border:0;border-radius:0;min-height:48px;
   padding:14px 2px;margin:0 28px -1px 0;font-size:13px;letter-spacing:.14em;
-  font-weight:600;color:var(--ink-3);border-bottom:2px solid transparent}
+  font-weight:600;color:var(--ink-3);border-bottom:2px solid transparent;
+  white-space:nowrap;flex:0 0 auto}
 nav.tabs button:hover{color:var(--accent)}
 nav.tabs button.on{color:var(--ink);border-bottom-color:var(--accent)}
 
@@ -103,6 +107,11 @@ a:hover{border-bottom-color:var(--accent);color:var(--accent)}
 .rec input{flex:1;min-width:200px;padding:10px 2px;border:0;
   border-bottom:1px solid var(--ink-2);background:transparent;color:var(--ink);
   font-family:inherit;font-size:15px;min-height:44px}
+.rec input[type=file]{flex:0 1 auto;border-bottom-style:dashed;font-size:14px}
+.rec input[type=file]::file-selector-button{font-family:inherit;font-size:13px;cursor:pointer;
+  background:transparent;color:var(--accent);border:1px solid var(--accent);
+  padding:6px 12px;margin-right:12px;border-radius:0}
+.rec input[type=file]::file-selector-button:hover{background:var(--accent);color:var(--paper)}
 #rectime{font-size:22px;color:var(--ink-3);min-width:76px}
 #rectime.on{color:var(--accent)}
 button.recording{background:var(--accent);border-color:var(--accent)}
@@ -148,6 +157,11 @@ details>summary{cursor:pointer;font-size:12px;letter-spacing:.14em;text-transfor
   max-height:340px;overflow:auto}
 .back{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);
   border:0;display:inline-block;margin:28px 0 0}
+/* 하위 화면(기록 상세·승인 관리)에서 메인으로 나가는 문. 아래쪽 '목록으로' 는 원문이 길면
+   폰에서 사실상 닿지 않아 위에도 둔다 — 여기선 링크가 아니라 버튼으로 보여야 한다. */
+.backbtn{display:inline-block;margin-bottom:16px;padding:8px 14px;min-height:36px;
+  font-size:12px;letter-spacing:.1em;color:var(--ink-2);border:1px solid var(--rule)}
+.backbtn:hover{color:var(--accent);border-color:var(--accent)}
 
 .acct{float:right;clear:right;text-align:right;color:var(--ink-3);font-size:12px;
   letter-spacing:.08em;margin-top:6px}
@@ -169,6 +183,8 @@ form.retitle input{flex:1}
 
 @media (max-width:760px){
   .wrap{padding:0 18px 72px}
+  /* 폰 폭(360px)에 탭 넷이 한 줄로 들어가게 활자·자간·간격을 함께 줄인다 */
+  nav.tabs button{font-size:12px;letter-spacing:.06em;margin-right:18px}
   .acct{float:none;text-align:left}
   form.compose{grid-template-columns:1fr;gap:20px}
   .masthead .meta{float:none;text-align:left;margin-top:8px}
@@ -320,16 +336,17 @@ def page(title: str, body: str) -> str:
 <body><div class="wrap">{body}</div></body></html>"""
 
 
-def masthead(sub: str, user: str = "", admin: bool = False) -> str:
+def masthead(sub: str, user: str = "", admin: bool = False, back: str = "") -> str:
     acct = ""
     if user:
         adm = ' <a href="/admin">승인 관리</a> ·' if admin else ""
         acct = (f'<div class="acct mono">{_e(user)} ·{adm}'
                 f' <form method="post" action="/logout"><button class="link">로그아웃</button>'
                 f'</form></div>')
+    home = f'<a class="backbtn" href="{_e(back)}">← 기록 목록</a>' if back else ""
     return f"""<header class="masthead">
   <div class="meta mono">AUTO&nbsp;ZOOM</div>{acct}
-  <h1>회의 속기록</h1><p>{_e(sub)}</p></header>"""
+  {home}<h1>회의 속기록</h1><p>{_e(sub)}</p></header>"""
 
 
 def login(err: str = "") -> str:
@@ -418,7 +435,7 @@ def admin(users: list[dict], me: str, bot_status: dict | None = None) -> str:
              pattern="[0-9]{4,8}" maxlength="8" required></div>
     <button class="ghost" type="submit">인증 코드 전송</button>
   </form>"""
-    body = masthead("가입 신청을 승인·거절한다.", me, True) + f"""
+    body = masthead("가입 신청을 승인·거절한다.", me, True, back="/") + f"""
 <h2 class="rule">Zoom 봇 계정</h2>
 <div class="rec">
   <form method="post" action="/admin/zoom-login">
@@ -465,12 +482,13 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
     </tr></thead><tbody>{rows}</tbody></table>""" if jobs else \
         '<div class="empty">아직 기록이 없다. 위에 회의 링크를 넣어 시작한다.</div>'
 
-    body = masthead("이 기기로 녹음하거나, 줌에 봇을 보내거나, 영상 링크를 넣는다. "
+    body = masthead("이 기기로 녹음하거나, 줌에 봇을 보내거나, 영상 링크·파일을 넣는다. "
                     "어느 쪽이든 전문과 요약, 질의응답이 남는다.", user, admin) + f"""
 <nav class="tabs">
   <button id="tb-rec" class="on" onclick="showTab('rec')">녹음</button>
   <button id="tb-zoom" onclick="showTab('zoom')">줌 봇</button>
   <button id="tb-media" onclick="showTab('media')">링크 전사</button>
+  <button id="tb-file" onclick="showTab('file')">동영상 올리기</button>
 </nav>
 <section id="tab-rec">
   <div class="rec">
@@ -522,18 +540,56 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
     <button class="primary" type="submit">녹음·전사 시작</button>
   </form>
 </section>
+<section id="tab-file" hidden>
+  <div class="rec">
+    <input id="vfile" type="file" accept="video/*,audio/*">
+    <input id="vtitle" type="text" maxlength="80" placeholder="제목(비우면 파일 이름)">
+    <button id="vbtn" class="primary" onclick="upload()">전사·요약 시작</button>
+  </div>
+  <div class="hint">회의를 찍은 동영상이나 녹음 파일을 그대로 올린다. 소리만 뽑아 전사하고
+    요약·질의응답까지 이어진다. 큰 파일은 나눠서 올라가니 다 올라갈 때까지 이 창을 닫지 않는다.</div>
+</section>
 <h2 class="rule">기록</h2>
 {table}
 <script>
 function showTab(k){{
-  for (const t of ['rec','zoom','media']){{
+  for (const t of ['rec','zoom','media','file']){{
     document.getElementById('tab-'+t).hidden = t !== k;
     document.getElementById('tb-'+t).classList.toggle('on', t === k);
   }}
   history.replaceState(null, '', location.pathname + '#' + k);
 }}
 // 해시로 탭을 기억한다 — 10초 자동 새로고침에도 유지되고, 링크로 공유해도 그 탭이 열린다.
-showTab(['zoom','media'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'rec');
+showTab(['zoom','media','file'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'rec');
+let uploading = false;
+async function upload(){{
+  const f = document.getElementById('vfile').files[0];
+  if(!f){{ alert('올릴 파일을 고르세요.'); return; }}
+  const btn = document.getElementById('vbtn');
+  const idle = () => {{ uploading = false; btn.disabled = false; btn.textContent = '전사·요약 시작'; }};
+  const id = [...crypto.getRandomValues(new Uint8Array(16))]
+             .map(b => b.toString(16).padStart(2,'0')).join('');
+  const CH = 48 * 1024 * 1024;   // Cloudflare 프록시가 요청 하나를 100MB 에서 자른다
+  uploading = true; btn.disabled = true;
+  try {{
+    for (let off = 0; off < f.size; off += CH) {{
+      const last = off + CH >= f.size;
+      btn.textContent = '올리는 중 ' + Math.min(100, Math.round(off * 100 / f.size)) + '%';
+      const fd = new FormData();
+      fd.append('chunk', f.slice(off, off + CH));
+      fd.append('upload_id', id);
+      fd.append('filename', f.name);
+      fd.append('title', document.getElementById('vtitle').value
+                         || f.name.replace(/\\.[^.]+$/, '').slice(0, 80));
+      fd.append('last', last ? '1' : '0');
+      const r = await fetch('/api/upload', {{method:'POST', body: fd}});
+      const d = await r.json().catch(() => ({{}}));
+      if (!d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+      if (d.id) {{ btn.textContent = '전사 시작…'; location.href = '/jobs/' + d.id; return; }}
+    }}
+  }} catch (e) {{ alert('업로드 실패: ' + e); }}
+  idle();
+}}
 let mr = null, chunks = [], t0 = 0, timer = null;
 function recIdle(text){{
   const b = document.getElementById('recbtn');
@@ -588,15 +644,17 @@ async function del(id, title){{
   location.reload();
 }}
 const busy = {str(any(j['status'] in ACTIVE for j in jobs)).lower()};
-// 진행 중인 잡이 있으면 자동 갱신하되, 녹음 중엔 절대 새로고침하지 않는다(녹음이 죽는다).
-if (busy) setInterval(()=>{{ if(!(mr && mr.state === 'recording')) location.reload(); }}, 10000);
+// 진행 중인 잡이 있으면 자동 갱신하되, 녹음·업로드 중엔 절대 새로고침하지 않는다(둘 다 죽는다).
+if (busy) setInterval(()=>{{
+  if(!(mr && mr.state === 'recording') && !uploading) location.reload();
+}}, 10000);
 </script>"""
     return page("회의 속기록 · auto_zoom", body)
 
 
 def detail(j: dict, user: str = "", admin: bool = False) -> str:
     label, mark = STATE_KO.get(j["status"], (j["status"], ""))
-    parts = [masthead(j.get("title") or "제목 없음", user, admin)]
+    parts = [masthead(j.get("title") or "제목 없음", user, admin, back="/")]
     parts.append(f"""<p style="margin-top:20px">
       <span class="mark {mark}"></span><span class="state">{_e(label)}</span>
       <span class="url mono">{_e(j['url']) if j.get('url') else '직접 녹음'}</span></p>""")

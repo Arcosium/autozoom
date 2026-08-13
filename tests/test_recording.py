@@ -50,6 +50,56 @@ def test_recording_job_transcribes_and_summarizes(monkeypatch):
     assert (jobs.config.DATA / "transcripts" / f"{j['id']}.txt").exists()
 
 
+def test_video_upload_strips_picture_and_transcribes(monkeypatch):
+    """직접 올린 회의 영상 — 영상 트랙이 붙어 있어도 소리만 떼어 전사한다(-vn)."""
+    _fake_brains(monkeypatch)
+    src = jobs.config.DATA / "meeting.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=1",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-c:v", "libx264", "-c:a", "aac", "-shortest", str(src)], check=True)
+
+    j = _wait(jobs.create_recording_job(src, "회의 영상"))
+    assert j["status"] == "done", j["log"]
+    assert j["transcript"].endswith("테스트 발화")
+    assert j["duration_s"] > 0
+    assert not src.exists()
+
+
+def test_chunked_upload_reassembles_and_rejects_bad_id(monkeypatch):
+    """브라우저가 조각내 보낸 파일이 하나로 이어붙어 잡이 된다(CF 100MB 우회 경로)."""
+    _fake_brains(monkeypatch)
+    from fastapi.testclient import TestClient
+
+    from app import auth, server
+
+    auth.add_user("uploader", "pw1234")
+    # 세션 쿠키가 Secure 라서 https 로 부른다(운영도 cloudflared 뒤 https).
+    client = TestClient(server.app, base_url="https://testserver")
+    assert client.post("/login", data={"username": "uploader", "password": "pw1234"},
+                       follow_redirects=False).status_code == 303
+
+    src = jobs.config.DATA / "chunky.m4a"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "sine=frequency=440:duration=1", "-ac", "1", "-c:a", "aac", str(src)],
+                   check=True)
+    raw, uid = src.read_bytes(), "a" * 32
+    half = len(raw) // 2
+    form = {"upload_id": uid, "filename": "회의 영상.mp4"}
+    assert client.post("/api/upload", files={"chunk": raw[:half]},
+                       data={**form, "last": "0"}).json() == {"ok": True}
+    res = client.post("/api/upload", files={"chunk": raw[half:]},
+                      data={**form, "title": "쪼갠 영상", "last": "1"}).json()
+    assert res["ok"]
+    j = _wait(res["id"])
+    assert j["status"] == "done" and j["title"] == "쪼갠 영상"
+    assert j["duration_s"] > 0                # 조각이 제대로 이어붙어야 ffmpeg 가 읽는다
+
+    # 업로드 식별자는 파일 이름이 된다 — 경로 탈출을 막는다
+    assert client.post("/api/upload", files={"chunk": b"x"},
+                       data={"upload_id": "../../etc/passwd", "last": "1"}).status_code == 400
+
+
 def test_broken_upload_fails_without_leftovers(monkeypatch):
     _fake_brains(monkeypatch)
     src = jobs.config.DATA / "junk.m4a"

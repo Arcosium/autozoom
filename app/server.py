@@ -49,6 +49,8 @@ def _require_admin(request: Request) -> str:
 @app.on_event("startup")
 def _startup() -> None:
     jobs.init_db()          # 스케줄러 스레드도 여기서 뜬다
+    for leftover in (config.DATA / "audio").glob("up_*"):
+        leftover.unlink(missing_ok=True)   # 재시작으로 끊긴 업로드 조각. 살릴 잡이 없다
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -150,7 +152,9 @@ def create_media(url: str = Form(...), title: str = Form("")) -> RedirectRespons
     return RedirectResponse("/", status_code=303)
 
 
-SUFFIX_OK = re.compile(r"\.(webm|m4a|mp4|ogg|opus|wav|mp3|aac|3gp)$")
+SUFFIX_OK = re.compile(r"\.(webm|m4a|mp4|ogg|opus|wav|mp3|aac|3gp|"
+                       r"mkv|mov|avi|wmv|flv|ts|m4v|mpg|mpeg)$")
+HEX32 = re.compile(r"^[0-9a-f]{32}$")
 
 
 @app.post("/api/record")
@@ -170,6 +174,30 @@ async def record(audio: UploadFile = File(...), title: str = Form("")) -> JSONRe
         src.unlink(missing_ok=True)
         return JSONResponse({"ok": False, "error": "녹음이 너무 짧다"}, status_code=400)
     return JSONResponse({"ok": True, "id": jobs.create_recording_job(src, title)})
+
+
+@app.post("/api/upload")
+async def upload(chunk: UploadFile = File(...), upload_id: str = Form(...),
+                 filename: str = Form(""), title: str = Form(""),
+                 last: str = Form("")) -> JSONResponse:
+    """동영상·오디오 파일을 직접 올려 전사·요약한다.
+
+    Cloudflare 프록시가 요청 하나를 100MB 에서 자르므로 브라우저가 조각내 순서대로
+    보내고 여기서 이어붙인다. 마지막 조각에서만 잡이 만들어진다.
+    """
+    if not HEX32.match(upload_id):
+        raise HTTPException(400, "잘못된 업로드 식별자")
+    suffix = Path(filename).suffix.lower()   # 경로가 섞여 와도 확장자만, 그것도 화이트리스트로
+    dst = config.DATA / "audio" / f"up_{upload_id}{suffix if SUFFIX_OK.match(suffix) else '.bin'}"
+    with dst.open("ab") as f:
+        while part := await chunk.read(1 << 20):
+            f.write(part)
+    if last != "1":
+        return JSONResponse({"ok": True})
+    if dst.stat().st_size < 8000:            # 사실상 빈 파일 — 잡을 만들지 않는다
+        dst.unlink(missing_ok=True)
+        return JSONResponse({"ok": False, "error": "파일이 너무 작다"}, status_code=400)
+    return JSONResponse({"ok": True, "id": jobs.create_recording_job(dst, title)})
 
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)

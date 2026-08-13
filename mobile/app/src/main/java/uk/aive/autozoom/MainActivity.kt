@@ -2,6 +2,7 @@ package uk.aive.autozoom
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -16,6 +17,7 @@ import android.view.View
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -55,6 +57,15 @@ class MainActivity : AppCompatActivity() {
     /** 위젯은 권한을 물어볼 수 없다 — 마이크·알림 권한은 앱이 떠 있을 때 미리 받아 둔다. */
     private val askPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+
+    /** 웹의 '동영상 올리기' 탭이 연 파일 선택창. 취소해도 null 을 돌려줘야 웹뷰가 풀린다. */
+    private var pendingFilePick: ValueCallback<Array<Uri>>? = null
+    private val pickFile =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            pendingFilePick?.onReceiveValue(
+                WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
+            pendingFilePick = null
+        }
 
     companion object {
         private const val WEB_URL = "https://autozoom.ai-ve.uk"
@@ -271,6 +282,28 @@ class MainActivity : AppCompatActivity() {
             super.onProgressChanged(view, newProgress)
             binding.progressBar.progress = newProgress
             if (newProgress >= 100) binding.progressBar.visibility = View.GONE
+        }
+
+        /**
+         * 웹의 `<input type=file>` 에 안드로이드 파일 선택창을 붙인다. 이걸 안 달면 '동영상
+         * 올리기' 탭의 파일 고르기가 앱 안에서 아무 반응 없이 죽는다(웹 기본값은 거절).
+         */
+        override fun onShowFileChooser(
+            view: WebView?,
+            callback: ValueCallback<Array<Uri>>,
+            params: FileChooserParams,
+        ): Boolean {
+            pendingFilePick?.onReceiveValue(null)   // 앞선 요청이 떠 있으면 먼저 풀어 준다
+            pendingFilePick = callback
+            return try {
+                pickFile.launch(params.createIntent())
+                true
+            } catch (e: ActivityNotFoundException) {
+                pendingFilePick = null
+                Toast.makeText(this@MainActivity, "파일을 고를 앱이 없습니다.",
+                    Toast.LENGTH_SHORT).show()
+                false
+            }
         }
 
         /** 웹의 '직접 녹음' 버튼(getUserMedia)에 마이크를 내준다 — 앱이 이미 받은 권한 한도 안에서만. */

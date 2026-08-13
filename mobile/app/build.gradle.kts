@@ -11,8 +11,8 @@ android {
         applicationId = "uk.aive.autozoom"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"   // 1x1 녹음 위젯
+        versionCode = 3
+        versionName = "1.2.0"   // 동영상 파일 올리기(파일 선택창)
     }
 
     buildTypes {
