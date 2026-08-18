@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -388,6 +390,21 @@ def create_media_job(url: str, title: str = "") -> str:
     return job_id
 
 
+def _supported_node() -> str | None:
+    """yt-dlp EJS가 요구하는 Node 22 이상 실행 파일을 찾는다."""
+    candidates = [Path(p) for p in [shutil.which("node")] if p]
+    candidates += list((Path.home() / ".nvm" / "versions" / "node").glob("*/bin/node"))
+    for candidate in reversed(candidates):
+        try:
+            version = subprocess.check_output(
+                [str(candidate), "--version"], text=True, timeout=5).strip().lstrip("v")
+            if int(version.split(".", 1)[0]) >= 22:
+                return str(candidate)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+    return None
+
+
 def _download_media(job_id: str, url: str, log) -> Path:
     """yt-dlp 로 오디오를 내려받는다(유튜브·대부분의 영상 사이트·mp4 직링크).
 
@@ -398,25 +415,62 @@ def _download_media(job_id: str, url: str, log) -> Path:
     tmpl = config.DATA / "audio" / f"dl_{job_id}"
     opts = {"format": "bestaudio/best", "outtmpl": f"{tmpl}.%(ext)s",
             "noplaylist": True, "quiet": True, "no_warnings": True,
-            "noprogress": True}   # quiet 만으로는 진행바가 stdout(서비스 로그)에 찍힌다
+            "noprogress": True,
+            # 유튜브가 종료 방송을 순차 처리하는 동안 뒤쪽 조각은 잠시 404가 난다.
+            # 기본값처럼 건너뛰면 앞부분만 정상 완료되므로 오류로 중단한 뒤 아래에서
+            # 재생목록을 새로 추출해 같은 조각부터 이어받는다.
+            "skip_unavailable_fragments": False,
+            "fragment_retries": 1,
+            "retry_sleep_functions": {"fragment": lambda n: 2.0}}
+            # quiet 만으로는 진행바가 stdout(서비스 로그)에 찍힌다
+    node = _supported_node()
+    if node:
+        # 일반 web 클라이언트는 SABR/PO 토큰을 요구할 수 있다. 공개 임베드가 허용된
+        # 영상은 web_embedded 클라이언트로 확정 다시보기 파일을 안정적으로 받는다.
+        opts["js_runtimes"] = {"node": {"path": node}}
+        opts["remote_components"] = {"ejs:github"}
+        opts["extractor_args"] = {"youtube": {"player_client": ["web_embedded"]}}
 
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
-        if info.get("is_live"):
-            raise ValueError("현재 라이브 중인 영상이다")
-        dur = info.get("duration") or 0
-        if dur > config.MAX_MEETING_S:
-            raise ValueError(f"영상이 {dur / 3600:.1f}시간 — "
-                             f"한도 {config.MAX_MEETING_S // 3600}시간을 넘는다")
-        job = get_job(job_id)
-        if job and not (job.get("title") or "").strip() and info.get("title"):
-            set_title(job_id, info["title"])
-        log(f"내려받기 시작 — {info.get('title') or url}"
-            + (f" ({int(dur) // 60}분)" if dur else ""))
-        ydl.download([url])
+    if info.get("is_live"):
+        raise ValueError("현재 라이브 중인 영상이다")
+    dur = info.get("duration") or 0
+    if dur > config.MAX_MEETING_S:
+        raise ValueError(f"영상이 {dur / 3600:.1f}시간 — "
+                         f"한도 {config.MAX_MEETING_S // 3600}시간을 넘는다")
+    job = get_job(job_id)
+    if job and not (job.get("title") or "").strip() and info.get("title"):
+        set_title(job_id, info["title"])
+    log(f"내려받기 시작 — {info.get('title') or url}"
+        + (f" ({int(dur) // 60}분)" if dur else ""))
+
+    post_live = info.get("live_status") == "post_live" or bool(info.get("was_live"))
+    deadline = time.time() + config.MAX_MEETING_S
+    attempt = 0
+    while True:
+        try:
+            # 매 시도마다 URL을 다시 추출한다. 종료 직후 다시보기의 조각 URL은
+            # 처리가 진행되면서 갱신되며, 기존 URL만 재시도하면 영구 정체될 수 있다.
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            break
+        except yt_dlp.utils.DownloadError:
+            if not post_live or time.time() >= deadline:
+                raise
+            attempt += 1
+            if attempt == 1 or attempt % 6 == 0:
+                log(f"전체 다시보기 처리 대기 — 재생목록 갱신 {attempt}회")
+            time.sleep(10)
     files = sorted((config.DATA / "audio").glob(f"dl_{job_id}.*"))
     if not files:
         raise RuntimeError("내려받은 파일이 없다")
+    downloaded_s = chunker.duration_s(files[0])
+    tolerance_s = max(15.0, float(dur) * 0.02)
+    if dur and downloaded_s + tolerance_s < float(dur):
+        raise RuntimeError(
+            f"전체 영상이 아직 준비되지 않았다: "
+            f"원본 {float(dur):.0f}초 / 다운로드 {downloaded_s:.0f}초")
     return files[0]
 
 
@@ -463,21 +517,21 @@ def _record_live(job_id: str, url: str, wav: Path, log) -> bool:
 
     if not (get_job(job_id) or {}).get("title") and info.get("title"):
         set_title(job_id, info["title"])
-    stream_url = info.get("url")
-    if not stream_url:
-        raise RuntimeError("라이브 오디오 주소를 얻지 못했다")
-
-    headers = info.get("http_headers") or {}
-    header_text = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
-    cmd = ["ffmpeg", "-y", "-loglevel", "warning", "-reconnect", "1",
-           "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
-    if header_text:
-        cmd += ["-headers", header_text]
-    cmd += ["-i", stream_url, "-vn", "-ar", "16000", "-ac", "1", str(wav)]
-    # 라이브 HLS는 끊긴 조각마다 경고를 많이 낸다. PIPE를 읽지 않으면 약 64KB 뒤
-    # ffmpeg 자체가 멈추므로, 진행 로그에 필요한 종료 코드만 남기고 출력을 버린다.
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            text=True, env=dict(os.environ))
+    # 추출 시점의 HLS 주소를 ffmpeg에 직접 주면 방송 시작 직후의 짧은 재생목록만 받고
+    # 정상 종료할 수 있다. yt-dlp가 재생목록을 계속 갱신하게 두고 그 출력을 ffmpeg로 받는다.
+    # --live-from-start는 DVR이 허용된 방송에서 시작 전 누락분도 따라잡는다.
+    download = subprocess.Popen(
+        [sys.executable, "-m", "yt_dlp", "--quiet", "--no-warnings", "--no-playlist",
+         "--live-from-start", "--hls-use-mpegts", "-f", "bestaudio/best", "-o", "-", url],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=dict(os.environ))
+    if download.stdout is None:
+        raise RuntimeError("라이브 다운로드 출력을 열지 못했다")
+    proc = subprocess.Popen(
+        ["ffmpeg", "-y", "-nostdin", "-loglevel", "error", "-i", "pipe:0",
+         "-vn", "-ar", "16000", "-ac", "1", str(wav)],
+        stdin=download.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=dict(os.environ))
+    download.stdout.close()
     live = live_stt.LiveTranscriber(
         wav, log,
         on_progress=lambda segs: _update(
@@ -492,14 +546,17 @@ def _record_live(job_id: str, url: str, wav: Path, log) -> bool:
             if not get_job(job_id):
                 reason = "사용자 중단"
                 proc.terminate()
+                download.terminate()
                 break
             if _stop_flags.get(job_id):
                 reason = "사용자 중단"
                 proc.terminate()
+                download.terminate()
                 break
             if time.time() - started > config.MAX_MEETING_S:
                 reason = "최대 시간 초과"
                 proc.terminate()
+                download.terminate()
                 break
             time.sleep(2)
         try:
@@ -508,6 +565,14 @@ def _record_live(job_id: str, url: str, wav: Path, log) -> bool:
             proc.kill()
         if proc.returncode not in (0, 255, -15):
             raise RuntimeError(f"라이브 녹음기가 비정상 종료했습니다 ({proc.returncode})")
+        if reason == "방송 종료":
+            # 다운로드가 끝났더라도 원본이 여전히 라이브면 종료가 아니라 연결 손실이다.
+            try:
+                still_live = bool(_live_info(url).get("is_live"))
+            except Exception:
+                still_live = False
+            if still_live:
+                raise RuntimeError("라이브 연결이 끊겼지만 방송은 아직 진행 중입니다")
         segments = live.finish()
         duration = chunker.duration_s(wav)
         _update(job_id, duration_s=duration, reason=reason)
@@ -518,6 +583,8 @@ def _record_live(job_id: str, url: str, wav: Path, log) -> bool:
         live.cancel()
         if proc.poll() is None:
             proc.terminate()
+        if download.poll() is None:
+            download.terminate()
         _stop_flags.pop(job_id, None)
 
 

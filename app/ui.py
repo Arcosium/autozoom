@@ -211,6 +211,9 @@ STATE_KO = {
 }
 ACTIVE = {"scheduled", "queued", "joining", "recording", "downloading",
           "transcribing", "summarizing"}
+# 먼 미래의 예약만 있어도 목록 전체를 10초마다 새로고침하면 작성 중인 폼이 지워진다.
+# 실제 상태가 빠르게 바뀌는 작업만 자동 갱신한다.
+AUTO_REFRESH = ACTIVE - {"scheduled"}
 
 
 def _is_zoom(j: dict) -> bool:
@@ -504,7 +507,7 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
       <label for="url">회의 링크</label>
       <input id="url" name="url" type="url" required
              placeholder="https://us05web.zoom.us/j/000000000?pwd=…">
-      <div class="hint">Zoom 회의·웨비나와 bit.ly 같은 단축 링크도 가능. 실제 주소를 확인한 뒤 봇이 참석해 녹음한다</div>
+      <div class="hint">Zoom·유튜브·단축 링크 모두 가능. 실제 주소를 확인해 Zoom이면 봇 참석, 영상이면 녹음·전사로 자동 처리한다</div>
     </div>
     <div>
       <label for="title">제목</label>
@@ -530,7 +533,7 @@ def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
       <label for="murl">영상 링크</label>
       <input id="murl" name="url" type="url" required
              placeholder="https://www.youtube.com/watch?v=…">
-      <div class="hint">일반 영상과 단축 링크는 소리를 내려받아 전사한다. 라이브는 시작을 기다렸다가 녹음하며 원문을 실시간으로 채운다</div>
+      <div class="hint">Zoom·유튜브·단축 링크 모두 가능. 라이브는 시작을 기다렸다가 녹음하며 원문을 실시간으로 채운다</div>
     </div>
     <div>
       <label for="mtitle">제목</label>
@@ -643,10 +646,19 @@ async function del(id, title){{
   await fetch('/api/jobs/'+id,{{method:'DELETE'}});
   location.reload();
 }}
-const busy = {str(any(j['status'] in ACTIVE for j in jobs)).lower()};
-// 진행 중인 잡이 있으면 자동 갱신하되, 녹음·업로드 중엔 절대 새로고침하지 않는다(둘 다 죽는다).
+const busy = {str(any(j['status'] in AUTO_REFRESH for j in jobs)).lower()};
+let formDirty = false;
+document.querySelectorAll('input, textarea, select').forEach(el => {{
+  el.addEventListener('input', () => {{ formDirty = true; }});
+  el.addEventListener('change', () => {{ formDirty = true; }});
+}});
+function editingForm() {{
+  const el = document.activeElement;
+  return formDirty || !!(el && el.matches('input, textarea, select'));
+}}
+// 실제 처리 중인 잡만 자동 갱신한다. 폼을 작성 중이면 사용자가 제출할 때까지 그대로 둔다.
 if (busy) setInterval(()=>{{
-  if(!(mr && mr.state === 'recording') && !uploading) location.reload();
+  if(!(mr && mr.state === 'recording') && !uploading && !editingForm()) location.reload();
 }}, 10000);
 </script>"""
     return page("회의 속기록 · auto_zoom", body)
@@ -743,6 +755,14 @@ async function toCoresight(id){{
     btn.disabled = false; btn.textContent = '실패 · 다시 시도'; alert('요청 실패: ' + e);
   }}
 }}
-if ({str(j["status"] in ACTIVE).lower()}) setTimeout(()=>location.reload(), 10000);
+let formDirty = false;
+document.querySelectorAll('input, textarea, select').forEach(el => {{
+  el.addEventListener('input', () => {{ formDirty = true; }});
+  el.addEventListener('change', () => {{ formDirty = true; }});
+}});
+if ({str(j["status"] in AUTO_REFRESH).lower()}) setTimeout(()=>{{
+  const el = document.activeElement;
+  if (!formDirty && !(el && el.matches('input, textarea, select'))) location.reload();
+}}, 10000);
 </script>""")
     return page(f"{j.get('title') or '회의'} · auto_zoom", "".join(parts))

@@ -129,27 +129,34 @@ def index(request: Request) -> HTMLResponse:
 @app.post("/jobs")
 def create(url: str = Form(...), scheduled_at: str = Form(""),
            title: str = Form(""), bot_name: str = Form("")) -> RedirectResponse:
-    try:
-        resolved = links.resolve_url(url)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    if not links.is_zoom_url(resolved):
-        raise HTTPException(400, "이동한 최종 주소가 Zoom 링크가 아닙니다")
-    jobs.create_job(resolved, title.strip(), scheduled_at.strip() or None, bot_name)
-    return RedirectResponse("/", status_code=303)
-
-
-@app.post("/media")
-def create_media(url: str = Form(...), title: str = Form("")) -> RedirectResponse:
-    """일반 영상은 내려받고, 라이브는 방송 시작부터 녹음하며 실시간 전사한다."""
+    """링크 종류를 확인해 Zoom 봇 또는 영상 전사 작업으로 자동 분기한다."""
     try:
         resolved = links.resolve_url(url)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     if links.is_zoom_url(resolved):
-        raise HTTPException(400, "Zoom 링크는 '줌 봇' 탭에서 넣는다")
-    jobs.create_media_job(resolved, title.strip())
-    return RedirectResponse("/", status_code=303)
+        jobs.create_job(resolved, title.strip(), scheduled_at.strip() or None, bot_name)
+        tab = "zoom"
+    else:
+        jobs.create_media_job(resolved, title.strip())
+        tab = "media"
+    return RedirectResponse(f"/#{tab}", status_code=303)
+
+
+@app.post("/media")
+def create_media(url: str = Form(...), title: str = Form("")) -> RedirectResponse:
+    """최종 주소가 Zoom이면 봇을 보내고, 나머지는 영상·라이브로 처리한다."""
+    try:
+        resolved = links.resolve_url(url)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if links.is_zoom_url(resolved):
+        jobs.create_job(resolved, title.strip())
+        tab = "zoom"
+    else:
+        jobs.create_media_job(resolved, title.strip())
+        tab = "media"
+    return RedirectResponse(f"/#{tab}", status_code=303)
 
 
 SUFFIX_OK = re.compile(r"\.(webm|m4a|mp4|ogg|opus|wav|mp3|aac|3gp|"
