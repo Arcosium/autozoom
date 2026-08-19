@@ -48,11 +48,11 @@ LOCALE = os.getenv("AZ_LOCALE", "ko-KR")
 TIMEZONE = os.getenv("AZ_TIMEZONE", "Asia/Seoul")
 
 JOIN_TIMEOUT_S = int(os.getenv("AZ_JOIN_TIMEOUT_S", "300"))
+# 안전장치: 회의가 이 시간을 넘으면 무조건 나간다(정상 종료 감지가 실패해도 봇이
+# 영원히 남지 않게). 무음은 종료 기준이 아니다 — 회의엔 조용한 구간이 흔하다.
 MAX_MEETING_S = int(os.getenv("AZ_MAX_MEETING_S", str(4 * 3600)))
 # 회의 시작 전이면 대기실/대기화면에서 이만큼까지 기다린다.
 WAIT_START_S = int(os.getenv("AZ_WAIT_START_S", "5400"))
-# 연속 무음이 이 시간을 넘으면 회의가 끝난 것으로 본다. 0이면 비활성.
-SILENCE_END_S = int(os.getenv("AZ_SILENCE_END_S", "900"))
 
 # --- STT ---
 STT_BACKEND = os.getenv("AZ_STT_BACKEND", "qwen3-asr")   # qwen3-asr | faster-whisper

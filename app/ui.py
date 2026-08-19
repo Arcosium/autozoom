@@ -449,10 +449,68 @@ def admin(users: list[dict], me: str, bot_status: dict | None = None) -> str:
     <div class="hint">로그인 창은 이 기기에 뜨지 않고 Autozoom 서버의 봇 브라우저에서 처리됩니다.</div></div>
 </div>{otp}
 {'<script>setTimeout(() => location.reload(), 2500)</script>' if active else ''}
+<h2 class="rule">직접 로그인 (원격 화면)</h2>
+<div class="hint" style="margin-top:10px">자동 로그인이 막힐 때 쓴다. 아래 화면이 서버의 봇 브라우저다 —
+  화면을 눌러 입력칸을 고르고, 입력창에 쓴 뒤 '입력'을 누른다. 로그인이 끝나면 '세션 저장'.</div>
+<div class="rec" style="border-bottom:0">
+  <button class="primary" id="rl-start" onclick="rlStart()">원격 로그인 열기</button>
+  <span class="state" id="rl-msg"></span>
+</div>
+<div id="rl-panel" hidden>
+  <img id="rl-screen" style="width:100%;max-width:1280px;border:1px solid var(--rule);
+       cursor:crosshair;display:block" alt="봇 브라우저 화면">
+  <div class="rec" style="border-bottom:0;padding-top:12px">
+    <input id="rl-text" type="text" placeholder="이메일·비밀번호·인증코드 입력 후 [입력]"
+           onkeydown="if(event.key==='Enter'){{rlType();event.preventDefault()}}">
+    <button class="ghost" onclick="rlType()">입력</button>
+    <button class="ghost" onclick="rlKey('Enter')">Enter</button>
+    <button class="ghost" onclick="rlKey('Tab')">Tab</button>
+    <button class="ghost" onclick="rlKey('Backspace')">⌫</button>
+    <button class="primary" onclick="rlSave()">세션 저장</button>
+    <button class="ghost danger" onclick="rlStop()">닫기</button>
+  </div>
+</div>
 <h2 class="rule">계정</h2>
 <table><thead><tr><th>상태</th><th>아이디</th><th></th></tr></thead>
 <tbody>{rows}</tbody></table>
-<a class="back" href="/">← 목록으로</a>"""
+<a class="back" href="/">← 목록으로</a>
+<script>
+let rlTimer = null;
+async function rlStart(){{
+  const b = document.getElementById('rl-start');
+  b.disabled = true; b.textContent = '브라우저 여는 중…';
+  const s = await (await fetch('/api/remote-login/start', {{method:'POST'}})).json();
+  document.getElementById('rl-msg').textContent = s.message || '';
+  b.disabled = false; b.textContent = '원격 로그인 열기';
+  if (s.on) rlShow();
+}}
+function rlShow(){{
+  document.getElementById('rl-panel').hidden = false;
+  const img = document.getElementById('rl-screen');
+  clearInterval(rlTimer);
+  rlTimer = setInterval(async () => {{
+    img.src = '/api/remote-login/screen.jpg?t=' + Date.now();
+    const s = await (await fetch('/api/remote-login/status')).json();
+    document.getElementById('rl-msg').textContent = s.message || '';
+    if (!s.on) {{ clearInterval(rlTimer); document.getElementById('rl-panel').hidden = true; }}
+  }}, 1000);
+}}
+async function rlEvent(ev){{ await fetch('/api/remote-login/event', {{method:'POST',
+  headers:{{'Content-Type':'application/json'}}, body: JSON.stringify(ev)}}); }}
+document.getElementById('rl-screen').addEventListener('click', e => {{
+  const r = e.currentTarget.getBoundingClientRect();
+  const k = 1280 / r.width;   // 이미지는 비율 유지로 줄어드니 x·y 축척이 같다
+  rlEvent({{t:'click', x:(e.clientX - r.left) * k, y:(e.clientY - r.top) * k}});
+}});
+function rlType(){{
+  const box = document.getElementById('rl-text');
+  if (box.value) rlEvent({{t:'text', v: box.value}});
+  box.value = '';
+}}
+function rlKey(k){{ rlEvent({{t:'key', v:k}}); }}
+async function rlSave(){{ rlEvent({{t:'save'}}); }}
+async function rlStop(){{ await fetch('/api/remote-login/stop', {{method:'POST'}}); }}
+</script>"""
     return page("승인 관리 · auto_zoom", body)
 
 

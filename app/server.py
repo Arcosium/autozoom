@@ -10,7 +10,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, bot_login, config, jobs, links, ui
+from . import auth, bot_login, config, jobs, links, remote_login, ui
 
 app = FastAPI(title="auto_zoom", docs_url=None, redoc_url=None)
 
@@ -106,6 +106,45 @@ def submit_bot_login_otp(request: Request, otp: str = Form("")) -> RedirectRespo
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     return RedirectResponse("/admin", status_code=303)
+
+
+@app.post("/api/remote-login/start")
+def remote_start(request: Request) -> JSONResponse:
+    """서버 봇 브라우저를 띄워 관리자가 화면을 보며 직접 로그인한다."""
+    _require_admin(request)
+    return JSONResponse(remote_login.start())
+
+
+@app.post("/api/remote-login/stop")
+def remote_stop(request: Request) -> JSONResponse:
+    _require_admin(request)
+    remote_login.stop()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/remote-login/status")
+def remote_status(request: Request) -> JSONResponse:
+    _require_admin(request)
+    return JSONResponse(remote_login.status())
+
+
+@app.get("/api/remote-login/screen.jpg")
+def remote_screen(request: Request):
+    _require_admin(request)
+    from fastapi.responses import Response
+
+    return Response(remote_login.screenshot() or b"", media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/remote-login/event")
+def remote_event(request: Request, event: dict = Body(...)) -> JSONResponse:
+    _require_admin(request)
+    try:
+        remote_login.send(event)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/admin/{action}")

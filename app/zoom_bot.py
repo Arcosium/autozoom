@@ -142,23 +142,33 @@ class Xvfb:
 
 
 def restore_cookies(ctx, log: Log) -> int:
-    """저장된 Zoom 쿠키를 주입한다.
+    """저장된 Zoom 쿠키를 **프로필에 없는 것만** 주입한다.
 
     프로필만으로는 부족하다 — Zoom 세션 쿠키의 상당수가 비영속(expires<0)이라
     브라우저를 닫으면 사라지고 로그인이 풀린다(실측). scripts/zoom_login.py 가
-    덤프해 둔 쿠키를 매 기동 시 다시 넣어 준다.
+    덤프해 둔 쿠키를 백업으로 넣어 준다.
+
+    단, 프로필에 **살아 있는 세션이 있으면 그 쿠키를 덮지 않는다**. 예전엔 저장분을
+    통째로 add_cookies 해서, 프로필은 로그인돼 있는데 그 위에 오래된 세션 쿠키가
+    덮여 살아 있던 세션을 깨뜨렸다(2026-08-19 실측: 수동 재로그인을 유발한 원인).
+    프로필이 비었을 때(세션이 날아갔을 때)만 저장분이 전부 채워진다.
     """
     path = config.DATA / "zoom_cookies.json"
     if not path.exists():
         return 0
     try:
-        cookies = json.loads(path.read_text(encoding="utf-8"))
-        ctx.add_cookies(cookies)
-        log(f"Zoom 쿠키 {len(cookies)}개 복원")
-        return len(cookies)
+        stored = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:  # noqa: BLE001
         log(f"쿠키 복원 실패(무시하고 진행): {type(e).__name__}: {e}")
         return 0
+    have = {(c.get("name"), c.get("domain")) for c in ctx.cookies()}
+    fresh = [c for c in stored if (c.get("name"), c.get("domain")) not in have]
+    if not fresh:
+        log(f"프로필 세션 유지 — 저장 쿠키 {len(stored)}개는 프로필에 이미 있어 건너뜀")
+        return 0
+    ctx.add_cookies(fresh)
+    log(f"Zoom 쿠키 {len(fresh)}개 복원(프로필에 없던 것만, 전체 {len(stored)}개 중)")
+    return len(fresh)
 
 
 def ensure_display_name(page: Page, desired: str, log: Log) -> bool:

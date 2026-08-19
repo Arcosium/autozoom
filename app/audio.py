@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -55,6 +56,7 @@ class SinkRecorder:
         self.sink_name = f"az_{job_id}"
         self.wav_path = wav_path
         self._module_id: str | None = None
+        self._sink_index: str | None = None
         self._proc: subprocess.Popen | None = None
         self.env = _pulse_env()
 
@@ -69,6 +71,7 @@ class SinkRecorder:
         if out.returncode != 0:
             raise AudioError(f"null-sink 생성 실패: {out.stderr.strip()}")
         self._module_id = out.stdout.strip()
+        self._sink_index = self._lookup_sink_index()
         self.wav_path.parent.mkdir(parents=True, exist_ok=True)
         self._proc = subprocess.Popen(
             ["parec", "--device", f"{self.sink_name}.monitor",
@@ -89,6 +92,71 @@ class SinkRecorder:
             return self.wav_path.stat().st_size
         except OSError:
             return 0
+
+    def _sinks_by_index(self) -> dict[str, str]:
+        out = subprocess.run(["pactl", "list", "short", "sinks"],
+                             env=self.env, capture_output=True, text=True)
+        m = {}
+        for line in out.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                m[parts[0]] = parts[1]
+        return m
+
+    def _lookup_sink_index(self) -> str | None:
+        for idx, name in self._sinks_by_index().items():
+            if name == self.sink_name:
+                return idx
+        return None
+
+    @staticmethod
+    def _pick_browser_moves(inputs: list, sinks: dict, sink_index: str,
+                            sink_name: str) -> list[str]:
+        """우리 싱크로 도로 끌어올 sink-input 인덱스들을 고른다(부수효과 없음, 테스트 대상).
+
+        규칙: 크로미움 재생 스트림 중, **다른 az_ 잡 싱크가 아닌** 곳으로 샌 것만 옮긴다.
+        이미 우리 싱크면 건드리지 않고, 다른 잡의 싱크에 정상적으로 붙은 것도 훔치지 않는다.
+        """
+        moves = []
+        for si in inputs:
+            props = si.get("properties") or {}
+            tag = (str(props.get("application.name") or "")
+                   + " " + str(props.get("application.process.binary") or "")).lower()
+            if not any(t in tag for t in ("chrom", "playwright", "headless")):
+                continue
+            cur = str(si.get("sink"))
+            if cur == str(sink_index):
+                continue                                   # 이미 우리 싱크
+            if sinks.get(cur, "").startswith("az_"):
+                continue                                   # 다른 잡 싱크 — 훔치지 않는다
+            idx = si.get("index")
+            if idx is not None:
+                moves.append(str(idx))
+        return moves
+
+    def reattach(self) -> int:
+        """우리 싱크에서 샌 브라우저 재생 스트림을 도로 끌어온다.
+
+        PipeWire 가 WebRTC 재협상·페이지 리로드 때 스트림을 기본 싱크로 옮겨,
+        회의 중 녹음이 조용히 무음이 되는 사고를 막는다(2026-08-19 실측: 2시간
+        지점에서 스트림이 이탈해 뒷부분이 통째로 무음 녹음됨).
+        """
+        if not self._sink_index:
+            self._sink_index = self._lookup_sink_index()
+        if not self._sink_index:
+            return 0
+        try:
+            inputs = json.loads(subprocess.run(
+                ["pactl", "-f", "json", "list", "sink-inputs"],
+                env=self.env, capture_output=True, text=True).stdout or "[]")
+        except Exception:  # noqa: BLE001 — 회복 시도가 녹음을 죽이면 안 된다
+            return 0
+        moves = self._pick_browser_moves(inputs, self._sinks_by_index(),
+                                         self._sink_index, self.sink_name)
+        for idx in moves:
+            subprocess.run(["pactl", "move-sink-input", idx, self.sink_name],
+                           env=self.env, capture_output=True, check=False)
+        return len(moves)
 
     def __exit__(self, *exc) -> None:
         if self._proc and self._proc.poll() is None:

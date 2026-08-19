@@ -236,20 +236,6 @@ def delete_job(job_id: str) -> bool:
     return True
 
 
-def _tail_dbfs(wav: Path, seconds: float) -> float:
-    """wav 의 마지막 N초 평균 음량. 회의 종료(무음 지속) 판정에 쓴다."""
-    total = chunker.duration_s(wav)
-    if total <= seconds:
-        return 0.0
-    tmp = wav.with_suffix(".tail.wav")
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav),
-                    "-ss", f"{total - seconds:.2f}", str(tmp)], check=False)
-    try:
-        return chunker.mean_dbfs(tmp)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
 def run_job(job_id: str) -> None:
     job = get_job(job_id)
     if not job:
@@ -261,22 +247,20 @@ def run_job(job_id: str) -> None:
 
     try:
         with audio.SinkRecorder(job_id, wav) as rec:
-            quiet_since: float | None = None
+            last_pin = 0.0
 
             def on_tick(elapsed: float) -> str | None:
-                nonlocal quiet_since
+                # 봇은 무음으로는 절대 나가지 않는다 — 회의엔 조용한 구간이 흔하다.
+                # 종료는 (1) Zoom 의 실제 회의 종료 감지, (2) 사용자 중지,
+                # (3) 최대 시간 상한(zoom_bot 의 MAX_MEETING_S)에서만 일어난다.
+                nonlocal last_pin
                 if job["status"] != "recording":
                     _update(job_id, status="recording")
-                if not config.SILENCE_END_S or elapsed < 120:
-                    return None
-                if int(elapsed) % 60 >= 3:      # 1분에 한 번만 검사
-                    return None
-                if _tail_dbfs(wav, 60) < config.ASR_MIN_DBFS:
-                    quiet_since = quiet_since or elapsed
-                    if elapsed - quiet_since > config.SILENCE_END_S:
-                        return "무음 지속으로 회의 종료 판정"
-                else:
-                    quiet_since = None
+                # 30초마다 브라우저 스트림을 우리 싱크에 도로 붙인다(캡처 이탈 방지).
+                if elapsed - last_pin >= 30:
+                    last_pin = elapsed
+                    if rec.reattach():
+                        log("오디오 스트림이 딴 싱크로 새어 도로 끌어옴 — 무음 방지")
                 return None
 
             # 회의가 도는 동안 60초 단위로 계속 전사한다(종료 후 대기 시간을 없앤다).
