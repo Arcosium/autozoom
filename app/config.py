@@ -71,6 +71,9 @@ ASR_CHUNK_S = float(os.getenv("AZ_ASR_CHUNK_S", "45"))
 ASR_MIN_DBFS = float(os.getenv("AZ_ASR_MIN_DBFS", "-45"))
 # 사장 지시: 평소엔 메모리에 올려두지 않는다. 유휴 시 프로세스째 내린다.
 ASR_IDLE_UNLOAD_S = int(os.getenv("AZ_ASR_IDLE_UNLOAD_S", "180"))
+# 기동 실패는 대개 통합메모리 고갈이고 남이 GPU 를 놓으면 풀린다 — 바로 실패로 접지 않는다.
+ASR_START_TRIES = int(os.getenv("AZ_ASR_START_TRIES", "3"))
+ASR_START_WAIT_S = int(os.getenv("AZ_ASR_START_WAIT_S", "60"))
 WHISPER_MODEL = os.getenv("AZ_WHISPER_MODEL", "large-v3")  # 폴백용
 
 # --- 요약 LLM (상시 가동 중인 로컬 llama-server) ---

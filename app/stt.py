@@ -59,9 +59,14 @@ def _touch() -> None:
 
 
 def is_loaded() -> bool:
+    """유휴 감시자가 내릴 대상이 있는가.
+
+    우리가 띄운 프로세스가 아니어도(재시작 뒤 살아남은 고아 서버 등) 포트를 물고 있으면
+    GPU 를 쥔 것이다 — 그때도 유휴 시 내려야 한다. unload() 가 포트로 찾아 끈다.
+    """
     if config.STT_BACKEND == "faster-whisper":
         return _fw_model is not None
-    return _proc is not None and _proc.poll() is None
+    return (_proc is not None and _proc.poll() is None) or _server_alive()
 
 
 def _kill_port_listener(port: int) -> bool:
@@ -108,6 +113,36 @@ def _server_alive() -> bool:
         return False
 
 
+def drop_page_cache(*paths: Path) -> None:
+    """이 파일들이 물고 있는 클린 페이지캐시를 놓는다(sudo 불필요, 다음 읽기만 느려진다).
+
+    GB10 통합메모리에서 CUDA 할당은 페이지캐시를 회수하지 못한다 — 방금 읽은 GGUF·녹음 wav 가
+    자기 캐시로 자기 로딩을 막아 모델을 올리기도 전에 cudaSetDevice 에서 OOM 으로 죽는다
+    (2026-09-12 실측: 595개 파일 fadvise → MemFree 1.3GB→14GB, 죽던 서버가 19초 만에 기동).
+    """
+    for path in paths:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _err_tail(path: Path, n: int = 2) -> str:
+    """서버 로그에서 죽은 이유로 보이는 줄만 추려 한 줄로 만든다.
+
+    llama-server 는 죽을 때 gdb 백트레이스를 길게 뱉는다 — 마지막 줄만 보면 정작 원인
+    ('CUDA error: out of memory')을 놓친다. 오류 줄을 앞에서부터 집는다.
+    """
+    try:
+        lines = [x.strip() for x in path.read_text("utf-8", "replace").splitlines() if x.strip()]
+    except OSError:
+        return ""
+    hits = [x for x in lines if re.search(r"error|out of memory|failed", x, re.I)]
+    return " / ".join((hits or lines[-n:])[:n])[:300]
+
+
 def _ensure_server(log: Log) -> None:
     global _proc
     with _lock:
@@ -121,22 +156,36 @@ def _ensure_server(log: Log) -> None:
         env = dict(os.environ)
         env["GGML_BACKEND_PATH"] = config.GGML_BACKEND_PATH
         env["LD_LIBRARY_PATH"] = config.GGML_LD_PATH
-        log(f"Qwen3-ASR 서버 기동 (port {config.ASR_PORT})")
-        _proc = subprocess.Popen(
-            [config.LLAMA_SERVER, "-m", str(model), "--mmproj", str(mmproj),
-             "--host", "127.0.0.1", "--port", str(config.ASR_PORT),
-             "--no-webui", "-ngl", "999", "-c", "32768", "--jinja"],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        for _ in range(120):
-            if _server_alive():
-                log("ASR 서버 준비 완료")
-                _touch()
-                return
-            if _proc.poll() is not None:
-                raise RuntimeError("ASR 서버가 기동 중 죽었다.")
-            time.sleep(1)
-        raise RuntimeError("ASR 서버 기동 타임아웃")
+        errlog = config.DATA / "asr-server.log"
+        for attempt in range(1, config.ASR_START_TRIES + 1):
+            # 메모리가 빠듯하면 우리가 쥔 캐시부터 놓고 띄운다(모델 + 쌓아 둔 녹음).
+            drop_page_cache(model, mmproj, *(config.DATA / "audio").glob("*.wav"))
+            log(f"Qwen3-ASR 서버 기동 (port {config.ASR_PORT})")
+            with errlog.open("wb") as fh:
+                _proc = subprocess.Popen(
+                    [config.LLAMA_SERVER, "-m", str(model), "--mmproj", str(mmproj),
+                     "--host", "127.0.0.1", "--port", str(config.ASR_PORT),
+                     "--no-webui", "-ngl", "999", "-c", "32768", "--jinja"],
+                    env=env, stdout=fh, stderr=subprocess.STDOUT,
+                )
+            why = ""
+            for _ in range(120):
+                if _server_alive():
+                    log("ASR 서버 준비 완료")
+                    _touch()
+                    return
+                if _proc.poll() is not None:
+                    why = "기동 중 죽었다"
+                    break
+                time.sleep(1)
+            unload()
+            why, detail = why or "기동 타임아웃", _err_tail(errlog)
+            # 메모리 고갈은 남이 GPU 를 놓으면 풀린다 — 한 번에 접지 말고 몇 번 더 두드린다.
+            if attempt == config.ASR_START_TRIES:
+                raise RuntimeError(f"ASR 서버가 {why}. {detail}")
+            log(f"ASR 서버가 {why} — {detail} / {config.ASR_START_WAIT_S}초 뒤 재시도 "
+                f"({attempt}/{config.ASR_START_TRIES})")
+            time.sleep(config.ASR_START_WAIT_S)
 
 
 def _asr_chunk(wav: Path) -> str:

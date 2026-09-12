@@ -270,6 +270,15 @@ def stop(job_id: str) -> JSONResponse:
     return JSONResponse({"ok": True, "deleted": jobs.get_job(job_id) is None})
 
 
+@app.post("/api/jobs/{job_id}/retry")
+def retry(job_id: str) -> JSONResponse:
+    if not jobs.get_job(job_id):
+        raise HTTPException(404, "없는 기록")
+    if not jobs.retry_job(job_id):
+        return JSONResponse({"ok": False, "error": "다시 돌릴 녹음이 없다"}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete(job_id: str) -> JSONResponse:
     """과거 기록 삭제 — 되돌릴 수 없다."""

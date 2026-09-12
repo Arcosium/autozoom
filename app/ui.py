@@ -740,7 +740,10 @@ def detail(j: dict, user: str = "", admin: bool = False) -> str:
         parts.append(f"""<p><button class="ghost" onclick="stop('{j['id']}')">
           {"예약 취소" if j["status"] == "scheduled" else "녹음·전사 중지"}</button></p>""")
     else:
-        parts.append(f'<p><button class="ghost danger" onclick="del(\'{j["id"]}\','
+        # 녹음은 남았는데 전사·요약만 넘어진 잡 — 다시 못 찍는 회의라 되돌릴 길을 둔다.
+        again = (f'<button class="ghost" onclick="again(\'{j["id"]}\')">전사 다시 시도</button> '
+                 if j["status"] in ("failed", "stopped") and j.get("wav_path") else "")
+        parts.append(f'<p>{again}<button class="ghost danger" onclick="del(\'{j["id"]}\','
                      f'{_json_str(j.get("title") or "제목 없음")})">기록 삭제</button></p>')
 
     if j.get("summary"):
@@ -772,6 +775,12 @@ async function del(id, title){{
   if(!confirm('['+title+'] 기록을 삭제할까요?\\n녹음·원문·요약이 모두 지워지고 되돌릴 수 없습니다.')) return;
   await fetch('/api/jobs/'+id,{{method:'DELETE'}});
   location.href = '/';
+}}
+async function again(id){{
+  const r = await fetch('/api/jobs/'+id+'/retry',{{method:'POST'}});
+  const d = await r.json().catch(()=>({{}}));
+  if(d.ok) location.reload();
+  else alert('다시 시도할 수 없습니다: ' + (d.error||r.status));
 }}
 async function askAI(id){{
   const box = document.getElementById('q');

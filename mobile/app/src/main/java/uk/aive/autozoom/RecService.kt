@@ -128,7 +128,14 @@ class RecService : Service() {
         }.start()
     }
 
-    /** 업로드 성공하면 파일을 지운다. 실패하면 남겨 뒀다가 다음 녹음 때 다시 보낸다. */
+    /**
+     * 업로드 성공하면 파일을 지운다. 실패하면 남겨 뒀다가 다음 녹음 때 다시 보낸다.
+     *
+     * 400 만 예외다 — 서버가 영영 받지 않는 파일이라(8KB 미만, 1초도 안 되는 녹음 등)
+     * 남겨 두면 녹음할 때마다 따라 올라가 매번 400 을 찍는다. 2026-09-12 확인 시점에
+     * 같은 두 건이 9/9부터 계속 재전송되고 있었다. 로그인이 풀린 401·403 과 5xx·네트워크
+     * 오류는 다음에 성공할 수 있으니 그대로 보존한다.
+     */
     private fun send(file: File): Boolean {
         val cookie = CookieManager.getInstance().getCookie(BASE)
         if (cookie.isNullOrBlank()) return false          // 아직 로그인 전 — 파일은 보존
@@ -151,7 +158,9 @@ class RecService : Service() {
                 file.inputStream().use { it.copyTo(out) }
                 out.writeBytes("\r\n--$boundary--\r\n")
             }
-            (conn.responseCode == 200).also { if (it) file.delete() }
+            val code = conn.responseCode
+            if (code == 200 || code == 400) file.delete()
+            code == 200
         } catch (_: Exception) {
             false
         } finally {

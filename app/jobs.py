@@ -360,6 +360,35 @@ def _run_recording(job_id: str, src: Path, wav: Path) -> None:
             _purge_files(job_id, wav)
 
 
+def retry_job(job_id: str) -> bool:
+    """실패·중단된 잡을 남아 있는 녹음으로 전사부터 다시 돌린다.
+
+    녹음은 멀쩡한데 전사·요약만 넘어진 경우(ASR 서버 기동 실패 등)가 있다 —
+    다시 녹음할 수 없는 회의를 살리는 경로다.
+    """
+    job = get_job(job_id)
+    wav = Path((job or {}).get("wav_path") or "")
+    if not job or job["status"] not in ("failed", "stopped") or not wav.exists():
+        return False
+    _update(job_id, status="transcribing", reason=None, ended_at=None)
+    threading.Thread(target=_run_retry, args=(job_id, wav), daemon=True).start()
+    return True
+
+
+def _run_retry(job_id: str, wav: Path) -> None:
+    log = lambda m: append_log(job_id, m)  # noqa: E731
+    try:
+        log("재처리 — 남아 있는 녹음으로 전사부터 다시")
+        _wrap_up(job_id, wav, log)
+    except Exception as e:  # noqa: BLE001
+        log(f"실패: {type(e).__name__}: {e}")
+        _update(job_id, status="failed", reason=f"{type(e).__name__}: {e}",
+                ended_at=datetime.now().isoformat(timespec="seconds"))
+    finally:
+        if not get_job(job_id):    # 처리 중에 삭제됐으면 뒤늦게 쓴 파일도 남기지 않는다
+            _purge_files(job_id, wav)
+
+
 def create_media_job(url: str, title: str = "") -> str:
     """영상 또는 라이브 링크를 녹음하면서 전사하고, 끝나면 요약한다."""
     init_db()

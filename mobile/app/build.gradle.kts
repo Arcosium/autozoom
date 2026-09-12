@@ -11,8 +11,8 @@ android {
         applicationId = "uk.aive.autozoom"
         minSdk = 29
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2.0"   // 동영상 파일 올리기(파일 선택창)
+        versionCode = 4
+        versionName = "1.2.1"   // 서버가 거절한(400) 녹음은 재전송하지 않는다
     }
 
     buildTypes {
