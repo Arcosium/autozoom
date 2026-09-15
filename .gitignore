@@ -15,3 +15,4 @@ mobile/local.properties
 
 # 가상환경 — 기기별 산출물(2026-08-07: 개별 파일 87줄 나열을 한 줄로 정리)
 .venv/
+/.code-review-graph
