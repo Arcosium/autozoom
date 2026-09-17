@@ -1,6 +1,7 @@
 """FastAPI 서버. 폼 하나로 예약·즉시 입장을 받고, 진행상황·요약을 보여준다."""
 from __future__ import annotations
 
+import hmac
 import os
 import re
 import uuid
@@ -17,10 +18,18 @@ app = FastAPI(title="auto_zoom", docs_url=None, redoc_url=None)
 PUBLIC_PATHS = {"/login", "/signup", "/health"}
 
 
+def _internal(request: Request) -> bool:
+    """arka-voice 의 로컬 위임 호출인가. cloudflared 도 127.0.0.1 에서 들어오므로 출발지 IP 로는
+    못 가른다 — 토큰이 맞고, 터널을 거친 요청에 붙는 cf-connecting-ip 헤더가 없을 때만 통과."""
+    given = request.headers.get("x-az-internal", "")
+    return bool(given) and "cf-connecting-ip" not in request.headers \
+        and hmac.compare_digest(given, auth.internal_token())
+
+
 @app.middleware("http")
 async def _require_login(request: Request, call_next):
     """로그인 게이트 — 라우트마다 검사하지 않고 여기 한 곳에서 막는다."""
-    if request.url.path in PUBLIC_PATHS or request.session.get("user"):
+    if request.url.path in PUBLIC_PATHS or request.session.get("user") or _internal(request):
         return await call_next(request)
     if request.url.path.startswith("/api/"):
         return JSONResponse({"ok": False, "error": "로그인이 필요하다"}, status_code=401)
@@ -48,6 +57,7 @@ def _require_admin(request: Request) -> str:
 
 @app.on_event("startup")
 def _startup() -> None:
+    auth.internal_token()   # 기동 때 만들어 둔다 — arka-voice 가 이 파일을 읽어 줌 봇 잡을 위임한다
     jobs.init_db()          # 스케줄러 스레드도 여기서 뜬다
     for leftover in (config.DATA / "audio").glob("up_*"):
         leftover.unlink(missing_ok=True)   # 재시작으로 끊긴 업로드 조각. 살릴 잡이 없다
@@ -167,18 +177,20 @@ def index(request: Request) -> HTMLResponse:
 
 @app.post("/jobs")
 def create(url: str = Form(...), scheduled_at: str = Form(""),
-           title: str = Form(""), bot_name: str = Form("")) -> RedirectResponse:
+           title: str = Form(""), bot_name: str = Form(""), request: Request = None):
     """링크 종류를 확인해 Zoom 봇 또는 영상 전사 작업으로 자동 분기한다."""
     try:
         resolved = links.resolve_url(url)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     if links.is_zoom_url(resolved):
-        jobs.create_job(resolved, title.strip(), scheduled_at.strip() or None, bot_name)
+        job_id = jobs.create_job(resolved, title.strip(), scheduled_at.strip() or None, bot_name)
         tab = "zoom"
     else:
-        jobs.create_media_job(resolved, title.strip())
+        job_id = jobs.create_media_job(resolved, title.strip())
         tab = "media"
+    if request is not None and "application/json" in request.headers.get("accept", ""):   # arka-voice 위임 호출
+        return JSONResponse({"ok": True, "job_id": job_id})
     return RedirectResponse(f"/#{tab}", status_code=303)
 
 

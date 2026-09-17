@@ -36,6 +36,16 @@ def session_secret() -> str:
     return SECRET_PATH.read_text(encoding="utf-8").strip()
 
 
+def internal_token() -> str:
+    """ArcAI.ve 비공개 엔진(arka-voice)이 줌 봇 잡을 위임할 때 쓰는 토큰. 봇 로그인 프로필이
+    하나뿐이라 봇은 이 프로세스에서만 돌린다. vault 에 한 번만 만든다."""
+    path = SECRET_PATH.with_name("internal_token")
+    if not path.exists():
+        path.write_text(secrets.token_hex(32), encoding="utf-8")
+        path.chmod(0o600)
+    return path.read_text(encoding="utf-8").strip()
+
+
 def _hash(password: str, salt_hex: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", (password or "").encode(),
                                bytes.fromhex(salt_hex), ITERATIONS).hex()

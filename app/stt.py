@@ -1,8 +1,13 @@
 """STT 백엔드.
 
-기본: Qwen3-ASR-0.6B GGUF 를 llama.cpp(llama-server)로 GPU 구동. 한국어 실측 35배속.
-사장 지시대로 **상시 상주시키지 않는다** — 잡이 들어올 때 서버를 띄우고,
-유휴 IDLE_UNLOAD_S 초가 지나면 프로세스째 내려 GPU/메모리를 비운다.
+기본: Qwen3-ASR GGUF 를 llama.cpp(llama-server)로 GPU 구동.
+
+운영(2026-09-17 밤 사장 지시): ASR 은 **항상 떠 있다**. asr-server.service(user, :11437,
+Qwen3-ASR-1.7B, 컨텍스트 8192)가 서버를 쥐고, 이 모듈은 살아 있는 서버를 그대로 쓴다
+(_ensure_server 가 /health 를 보고 바로 돌아온다). 올렸다 내렸다 하지 않는다 — 운영 유닛이
+AZ_ASR_IDLE_UNLOAD_S 를 사실상 무한대로 준다. 예전의 "상시 상주 금지" 방침은 이것으로 끝났다.
+그 서비스가 없을 때(단독 실행·개발)만 아래의 기동/유휴 언로드 경로가 돈다.
+실측(같은 날): 0.6B→1.7B 로 Zeroth CER 5.01→3.36%, 유휴 GPU 점유 0~1%, 상주 메모리 4.0GB.
 
 폴백: faster-whisper (CPU, 약 1배속). AZ_STT_BACKEND=faster-whisper 로 전환.
 """
@@ -165,7 +170,7 @@ def _ensure_server(log: Log) -> None:
                 _proc = subprocess.Popen(
                     [config.LLAMA_SERVER, "-m", str(model), "--mmproj", str(mmproj),
                      "--host", "127.0.0.1", "--port", str(config.ASR_PORT),
-                     "--no-webui", "-ngl", "999", "-c", "32768", "--jinja"],
+                     "--no-webui", "-ngl", "999", "-c", str(config.ASR_CTX), "--jinja"],
                     env=env, stdout=fh, stderr=subprocess.STDOUT,
                 )
             why = ""

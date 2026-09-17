@@ -64,12 +64,16 @@ ASR_DIR = Path(os.getenv("AZ_ASR_DIR", "/home/arcosium/models/llm/qwen3-asr"))
 ASR_MODEL = os.getenv("AZ_ASR_MODEL", str(ASR_DIR / "Qwen3-ASR-0.6B-Q8_0.gguf"))
 ASR_MMPROJ = os.getenv("AZ_ASR_MMPROJ", str(ASR_DIR / "mmproj-Qwen3-ASR-0.6B-bf16.gguf"))
 ASR_PORT = int(os.getenv("AZ_ASR_PORT", "11437"))
+# 청크가 45초 이하라 8192 면 넉넉하다. 32768 은 KV 캐시만 3GB 가까이 더 쓴다(2026-09-17 실측: 1.7B 6,765→4,053MiB).
+ASR_CTX = int(os.getenv("AZ_ASR_CTX", "32768"))
 ASR_BASE_URL = os.getenv("AZ_ASR_BASE_URL", f"http://127.0.0.1:{ASR_PORT}")
 # 실측: 60초까지는 37배속·무손실. 5분 통짜는 반복 환각(30문장→144문장)이 난다.
 ASR_CHUNK_S = float(os.getenv("AZ_ASR_CHUNK_S", "45"))
 # 실측: 완전 무음은 빈 출력이지만 미약한 노이즈엔 엉뚱한 외국어를 뱉는다 → 게이팅 필요.
 ASR_MIN_DBFS = float(os.getenv("AZ_ASR_MIN_DBFS", "-45"))
-# 사장 지시: 평소엔 메모리에 올려두지 않는다. 유휴 시 프로세스째 내린다.
+# 2026-09-17 밤 사장 지시로 방침이 바뀌었다: ASR 은 asr-server.service(user, :11437, Qwen3-ASR-1.7B)로
+# 항상 떠 있고 autozoom 과 arka-voice 가 같이 쓴다. 올렸다 내렸다 하지 않는다 — 운영 유닛이
+# AZ_ASR_IDLE_UNLOAD_S 를 사실상 무한대로 준다. 아래 기본값(180초)은 그 서비스 없이 단독으로 돌릴 때만 쓰인다.
 ASR_IDLE_UNLOAD_S = int(os.getenv("AZ_ASR_IDLE_UNLOAD_S", "180"))
 # 기동 실패는 대개 통합메모리 고갈이고 남이 GPU 를 놓으면 풀린다 — 바로 실패로 접지 않는다.
 ASR_START_TRIES = int(os.getenv("AZ_ASR_START_TRIES", "3"))
