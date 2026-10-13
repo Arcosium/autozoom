@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.request
 from typing import Callable
@@ -38,6 +39,12 @@ TEMPLATE = """다음은 회의 녹취 원문이다.
 - [ ] 담당자 — 할 일 — 기한(언급 없으면 미정)
 ## 미해결·후속 논의
 """
+
+OVERVIEW_INSTRUCTIONS = (
+    "전체 내용을 한국어 마크다운으로 요약하라. ## 한 줄 요약, ## 전체 내용 요약, ## 핵심 논점 순서로 작성하라. "
+    "전체 내용 요약은 주제별 소제목과 연결된 문단으로 정리하고 중요한 사례·숫자·결론을 보존하라. "
+    "내 할 일·다른 사람 할 일처럼 담당자별 작업 목록은 만들지 마라. 원문에 없는 결정이나 인물 관계를 추측하지 마라."
+)
 
 ASK_SYSTEM = (
     "너는 회의 녹취록을 읽고 질문에 답하는 조수다. 답은 반드시 주어진 원문에 근거해야 한다. "
@@ -84,8 +91,13 @@ def summarize(transcript: str, log: Log) -> str:
     log(f"요약 시작 (원문 {len(transcript):,}자)")
     owner = config.OWNER_NAMES[0] if config.OWNER_NAMES else "나"
     aliases = "·".join(config.OWNER_NAMES) or owner
-    prompt = TEMPLATE.format(transcript=transcript, owner=owner, aliases=aliases)
-    text = _chat([{"role": "system", "content": SYSTEM},
+    if os.environ.get('AZ_SUMMARY_STYLE') == 'overview':
+        instructions = OVERVIEW_INSTRUCTIONS
+        prompt = '<원문>\n' + transcript + '\n</원문>'
+    else:
+        instructions = TEMPLATE.format(transcript='{transcript}', owner=owner, aliases=aliases).split('</원문>', 1)[1].strip()
+        prompt = '<원문>\n' + transcript + '\n</원문>'
+    text = _chat([{"role": "system", "content": SYSTEM + '\n\n' + instructions},
                   {"role": "user", "content": prompt}], log)
     return text or "_(요약 생성 실패 — 원문을 직접 확인할 것)_"
 
