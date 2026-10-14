@@ -82,6 +82,6 @@ WHISPER_MODEL = os.getenv("AZ_WHISPER_MODEL", "large-v3")  # 폴백용
 
 # --- 요약 LLM (상시 가동 중인 로컬 llama-server) ---
 LLM_BASE_URL = os.getenv("AZ_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
-LLM_MODEL = os.getenv("AZ_LLM_MODEL", "qwen3.6-35b-a3b-uncensored")  # 2026-07-24 styletwin LoRA 제거 → 순수 base(:11434, model명은 서버가 무시)
+LLM_MODEL = os.getenv("AZ_LLM_MODEL", "arc-local")  # 2026-07-24 styletwin LoRA 제거 → 순수 base(:11434, model명은 서버가 무시)
 LLM_MAX_TOKENS = int(os.getenv("AZ_LLM_MAX_TOKENS", "24000"))
 LLM_TIMEOUT_S = int(os.getenv("AZ_LLM_TIMEOUT_S", "1800"))
