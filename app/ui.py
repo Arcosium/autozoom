@@ -1,206 +1,269 @@
-"""화면 템플릿. 컨셉: '속기록 원장(ledger)' — 종이·잉크·괘선, 단일 주묵 액센트.
+"""화면 템플릿. 컨셉: '편집실 타임코드 데크' — 원문은 타임코드 열과 발화로, 기록은 트랙 목록으로,
+진행은 수집·전사·요약 세 칸 미터로 보인다. 색은 차가운 회색 바탕과 청록 강조색.
 
-의도적으로 카드/필배지/글로우를 쓰지 않는다(사장 지시: AI 티 나는 디자인 금지).
-상태는 색 배지가 아니라 괘선 + 활자 + 작은 사각 마커로 표현한다.
+카드 격자·필 배지·글로우·그라데이션을 쓰지 않는다(사장 지시: AI 티 나는 디자인 금지).
 """
 from __future__ import annotations
 
 import html
 import json
 import re
+from urllib.parse import urlsplit
 
 CSS = """
 :root{
-  --paper:#f7f6f2; --ink:#16150f; --ink-2:#4b483d; --ink-3:#8a8676;
-  --rule:#d9d5c7; --rule-2:#ebe8dd; --accent:#a8332a; --accent-soft:#f0e2e0;
-  --ok:#3f6b45; --wait:#8a8676;
-  --space:8px;
+  --bg:#e9eef2; --surface:#fff; --ink:#172128; --ink-2:#45545f; --ink-3:#5d6d78;
+  --rule:#cbd5dd; --rule-2:#dce3e9; --accent:#08756b; --accent-soft:#e0f2ee;
+  --danger:#b42318; --danger-soft:#fdecea;
+  --on-ink:#fff; --on-accent:#fff;
 }
 @media (prefers-color-scheme: dark){
-  :root{ --paper:#14140f; --ink:#eceada; --ink-2:#b3b0a0; --ink-3:#7b7869;
-         --rule:#33322a; --rule-2:#242319; --accent:#e0685c; --accent-soft:#2b1e1c; }
+  :root{ --bg:#151c21; --surface:#1d272e; --ink:#e9eef2; --ink-2:#b4c2cc; --ink-3:#95a7b3;
+         --rule:#36444e; --rule-2:#2a3740; --accent:#62cbbb; --accent-soft:#183c37;
+         --danger:#f2867a; --danger-soft:#3a1f1c;
+         --on-ink:#151c21; --on-accent:#151c21; }
 }
-:root[data-theme=dark]{ --paper:#14140f; --ink:#eceada; --ink-2:#b3b0a0; --ink-3:#7b7869;
-  --rule:#33322a; --rule-2:#242319; --accent:#e0685c; --accent-soft:#2b1e1c; }
-:root[data-theme=light]{ --paper:#f7f6f2; --ink:#16150f; --ink-2:#4b483d; --ink-3:#8a8676;
-  --rule:#d9d5c7; --rule-2:#ebe8dd; --accent:#a8332a; --accent-soft:#f0e2e0; }
 
 *{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);
-  font-family:"Noto Serif KR",'Apple SD Gothic Neo',serif;
-  font-size:16px;line-height:1.6;-webkit-text-size-adjust:100%}
-.mono{font-family:"Fira Code",ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-variant-numeric:tabular-nums}
-.wrap{max-width:1100px;margin:0 auto;padding:0 24px 96px}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Noto Sans KR",Arial,sans-serif;font-size:16px;line-height:1.6;
+  word-break:keep-all;overflow-wrap:break-word;font-variant-numeric:tabular-nums}
+.wrap{max-width:1240px;margin:0 auto;padding:0 32px 96px}
+a{color:inherit;text-decoration-color:var(--rule);text-underline-offset:3px}
+a:hover{color:var(--accent);text-decoration-color:currentColor}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 
-header.masthead{border-bottom:2px solid var(--ink);margin-bottom:0;padding:40px 0 12px}
-.masthead h1{font-size:30px;letter-spacing:-.01em;margin:0 0 4px;font-weight:700}
-.masthead p{margin:0;color:var(--ink-2);font-size:14px}
-.masthead .meta{float:right;text-align:right;color:var(--ink-3);font-size:12px;
-  letter-spacing:.14em;text-transform:uppercase}
+/* 상단 막대: 브랜드 + 계정. 브랜드 앞 점은 녹음 표시등 */
+.bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  min-height:64px;border-bottom:1px solid var(--rule)}
+.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);
+  font-family:"Arial Black",Arial,sans-serif;font-weight:900;font-size:18px;letter-spacing:-.01em}
+.brand::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--accent)}
+.brand:hover{color:var(--ink)}
+.acct{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px 18px;
+  font-size:14px;color:var(--ink-2)}
+.acct form{display:inline}
+.who{color:var(--ink-3)}
 
-/* 탭이 넷이라 좁은 폭에선 flex 가 버튼을 짓눌러 탭 이름이 두 줄로 접혔다.
-   줄이지 말고(nowrap+shrink 0) 정 모자라면 가로로 밀리게 둔다. */
+.head{padding:36px 0 28px}
+.head h1{margin:0;font-size:34px;line-height:1.25;font-weight:700;letter-spacing:-.02em;
+  text-wrap:balance}
+.head p{margin:8px 0 0;color:var(--ink-2);max-width:62ch}
+/* 하위 화면에서 목록으로 나가는 문. 원문이 길면 아래쪽 링크는 폰에서 닿지 않아 위에도 둔다 */
+.backbtn{display:inline-flex;align-items:center;min-height:36px;margin-bottom:8px;
+  font-size:14px;color:var(--ink-2);text-decoration:none}
+.backbtn:hover{color:var(--accent)}
+
+h2.sec{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;
+  margin:44px 0 0;padding-bottom:10px;border-bottom:1px solid var(--ink);
+  font-size:18px;line-height:1.4;font-weight:700}
+h2.sec+.hint{margin-top:12px}
+.count{margin-left:8px;font-size:14px;font-weight:400;color:var(--ink-3)}
+.sec-act{display:flex;align-items:center;flex-wrap:wrap;gap:12px;font-size:13px;font-weight:400}
+.filed{color:var(--ink-2)}
+
+/* 목록 화면: 왼쪽 입력 콘솔, 오른쪽 기록 */
+.desk{display:grid;grid-template-columns:400px minmax(0,1fr);gap:48px;align-items:start}
+.console{position:sticky;top:24px;background:var(--surface);border:1px solid var(--rule);
+  border-radius:6px}
+.archive h2.sec{margin-top:0}
+
+/* 탭이 넷이라 좁은 폭에선 이름이 두 줄로 접혔다. 줄이지 말고 정 모자라면 가로로 밀리게 둔다 */
 nav.tabs{display:flex;border-bottom:1px solid var(--rule);overflow-x:auto;scrollbar-width:none}
 nav.tabs::-webkit-scrollbar{display:none}
-nav.tabs button{background:transparent;border:0;border-radius:0;min-height:48px;
-  padding:14px 2px;margin:0 28px -1px 0;font-size:13px;letter-spacing:.14em;
-  font-weight:600;color:var(--ink-3);border-bottom:2px solid transparent;
-  white-space:nowrap;flex:0 0 auto}
-nav.tabs button:hover{color:var(--accent)}
-nav.tabs button.on{color:var(--ink);border-bottom-color:var(--accent)}
+nav.tabs button{flex:1 0 auto;background:transparent;border:0;border-radius:0;min-height:48px;
+  padding:12px;margin-bottom:-1px;font-size:14px;font-weight:500;color:var(--ink-3);
+  border-bottom:2px solid transparent;white-space:nowrap}
+nav.tabs button:hover{color:var(--ink)}
+nav.tabs button.on{color:var(--ink);font-weight:700;border-bottom-color:var(--accent)}
+.pane{display:grid;gap:18px;padding:24px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 
-h2.rule{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);
-  font-weight:600;margin:40px 0 0;padding-bottom:6px;border-bottom:1px solid var(--rule);
-  display:flex;align-items:baseline;justify-content:space-between;gap:16px}
-.rule-act{display:flex;align-items:center;gap:12px;text-transform:none;letter-spacing:0}
-.filed{font-size:12px;color:var(--ok);letter-spacing:0;text-transform:none}
-button:disabled{opacity:.5;cursor:wait}
-
-form.compose{display:grid;grid-template-columns:1fr 170px 190px auto;gap:18px 20px;align-items:end;
-  padding:24px 0;border-bottom:1px solid var(--rule)}
-form.compose .wide{grid-column:1 / -1}   /* 회의 링크는 한 줄 전체를 쓴다 */
-label{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--ink-3);margin-bottom:6px;font-weight:600}
+label{display:block;margin-bottom:6px;font-size:13px;font-weight:500;color:var(--ink-2)}
 input[type=url],input[type=text],input[type=password],input[type=datetime-local]{
-  width:100%;padding:10px 2px;border:0;border-bottom:1px solid var(--ink-2);
-  background:transparent;color:var(--ink);font-size:15px;font-family:inherit;
-  min-height:44px;border-radius:0}
-input:focus{outline:0;border-bottom-color:var(--accent);
-  box-shadow:0 1px 0 0 var(--accent)}
-input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-.hint{font-size:12px;color:var(--ink-3);margin-top:6px}
+  width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--rule);border-radius:4px;
+  background:var(--bg);color:var(--ink);font:inherit;font-size:15px}
+input::placeholder{color:var(--ink-3)}
+input:focus{outline:0;border-color:var(--ink);background:var(--surface)}
+input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+input:disabled{opacity:.5;cursor:not-allowed}
+input[type=file]{width:100%;padding:14px;border:1px dashed var(--rule);border-radius:4px;
+  background:var(--bg);color:var(--ink-2);font:inherit;font-size:14px}
+input[type=file]::file-selector-button{margin-right:12px;padding:6px 12px;cursor:pointer;
+  border:1px solid var(--rule);border-radius:4px;background:var(--surface);color:var(--ink);
+  font:inherit;font-size:14px}
+.hint{max-width:70ch;margin:6px 0 0;font-size:13px;line-height:1.55;color:var(--ink-3)}
 
-button{font-family:inherit;font-size:14px;cursor:pointer;border-radius:0;
-  min-height:44px;padding:11px 20px;transition:background .18s ease,color .18s ease}
-button.primary{background:var(--ink);color:var(--paper);border:1px solid var(--ink);font-weight:600}
-button.primary:hover{background:var(--accent);border-color:var(--accent)}
-button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent);
-  padding:7px 14px;min-height:36px;font-size:13px}
-button.ghost:hover{background:var(--accent);color:var(--paper)}
+button{font:inherit;font-size:15px;cursor:pointer;border-radius:4px;min-height:44px;
+  padding:10px 18px;transition:background-color .16s ease,border-color .16s ease,
+  color .16s ease,transform .1s ease}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{opacity:.5;cursor:wait}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:var(--ink);color:var(--on-ink);border:1px solid var(--ink);font-weight:500}
+button.primary:hover{background:var(--ink-2);border-color:var(--ink-2)}
+button.ghost{min-height:36px;padding:6px 14px;font-size:14px;background:transparent;
+  color:var(--ink);border:1px solid var(--rule)}
+button.ghost:hover{border-color:var(--ink)}
+button.danger{color:var(--danger)}
+button.danger:hover{border-color:var(--danger);background:var(--danger-soft)}
+button.link{min-height:0;padding:0;background:transparent;border:0;color:var(--ink-2);
+  font-size:14px;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px}
+button.link:hover{color:var(--accent);text-decoration-color:currentColor}
+.full{width:100%}
 
-table{width:100%;border-collapse:collapse;margin-top:8px}
-th{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);
-  text-align:left;font-weight:600;padding:10px 12px 10px 0;white-space:nowrap;
-  border-bottom:1px solid var(--rule)}
-td{padding:14px 12px 14px 0;border-bottom:1px solid var(--rule-2);vertical-align:top;font-size:15px}
-tr:hover td{background:var(--rule-2)}
-td.num{width:1%;white-space:nowrap;color:var(--ink-3);font-size:13px}
-a{color:inherit;text-decoration:none;border-bottom:1px solid var(--rule)}
-a:hover{border-bottom-color:var(--accent);color:var(--accent)}
+/* 녹음 탭: 큰 시계와 REC 버튼 */
+.clock{font-size:52px;font-weight:300;line-height:1;letter-spacing:-.02em;color:var(--ink-3)}
+.clock.on{color:var(--accent)}
+button.recbtn{width:100%;background:var(--accent);color:var(--on-accent);
+  border:1px solid var(--accent);font-weight:700}
+button.recbtn:hover{background:color-mix(in srgb,var(--accent) 86%,#000)}
+button.recbtn.recording{background:var(--ink);border-color:var(--ink);color:var(--on-ink)}
 
-.mark{display:inline-block;width:7px;height:7px;margin-right:8px;vertical-align:baseline;
-  background:var(--ink-3)}
-.mark.live{background:var(--accent);animation:pulse 1.8s ease-in-out infinite}
-.mark.done{background:var(--ok)}
-.mark.fail{background:var(--accent);opacity:.45}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
-@media (prefers-reduced-motion:reduce){.mark.live{animation:none}*{transition:none!important}}
-.state{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);
-  white-space:nowrap;font-weight:600}
-.url{color:var(--ink-3);font-size:12px;word-break:break-all;display:block;margin-top:3px}
-.when-sm{display:none}   /* 좁은 화면에서만 제목 아래로 내려오는 날짜 (아래 미디어쿼리) */
+/* 기록 목록 */
+table{width:100%;border-collapse:collapse}
+th{padding:14px 12px 10px 0;border-bottom:1px solid var(--rule);text-align:left;
+  font-size:13px;font-weight:500;color:var(--ink-3);white-space:nowrap}
+td{padding:16px 12px 16px 0;border-bottom:1px solid var(--rule-2);vertical-align:top;font-size:15px}
+tbody tr:hover td{background:var(--surface)}
+td.num{width:1%;white-space:nowrap;font-size:14px;color:var(--ink-2)}
+td.act{width:1%;white-space:nowrap;text-align:right;padding-right:0}
+td.act form{display:inline}
+.title{font-weight:500;text-decoration:none}
+.src{display:block;margin-top:2px;word-break:break-all;font-family:Arial,sans-serif;
+  font-size:13px;color:var(--ink-3)}
+.when-sm{display:none;margin-top:4px;font-size:13px;color:var(--ink-3)}
 
-.rec{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:22px 0;
-  border-bottom:1px solid var(--rule)}
-.rec input{flex:1;min-width:200px;padding:10px 2px;border:0;
-  border-bottom:1px solid var(--ink-2);background:transparent;color:var(--ink);
-  font-family:inherit;font-size:15px;min-height:44px}
-.rec input[type=file]{flex:0 1 auto;border-bottom-style:dashed;font-size:14px}
-.rec input[type=file]::file-selector-button{font-family:inherit;font-size:13px;cursor:pointer;
-  background:transparent;color:var(--accent);border:1px solid var(--accent);
-  padding:6px 12px;margin-right:12px;border-radius:0}
-.rec input[type=file]::file-selector-button:hover{background:var(--accent);color:var(--paper)}
-#rectime{font-size:22px;color:var(--ink-3);min-width:76px}
-#rectime.on{color:var(--accent)}
-button.recording{background:var(--accent);border-color:var(--accent)}
+/* 진행 미터: 수집·전사·요약. 지난 칸은 잉크, 지금 칸은 신호색 */
+.status{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.meter{display:inline-flex;gap:3px}
+.meter i{position:relative;overflow:hidden;width:12px;height:4px;background:var(--rule)}
+.meter i.on{background:var(--ink)}
+.meter i.now::after{content:"";position:absolute;inset:0;background:var(--accent);
+  transform-origin:left;animation:fill 1.6s ease-in-out infinite}
+@keyframes fill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.state{font-size:14px;color:var(--ink-2)}
+.state.live{color:var(--ink);font-weight:500}
+.state.fail{color:var(--danger)}
+@media (prefers-reduced-motion:reduce){.meter i.now::after{animation:none}*{transition:none!important}}
 
-.empty{padding:56px 0;text-align:center;color:var(--ink-3)}
-.empty::before{content:"—";display:block;font-size:24px;margin-bottom:8px;color:var(--rule)}
+.empty{padding:48px 0;color:var(--ink-3)}
+.empty strong{display:block;margin-bottom:4px;font-size:17px;color:var(--ink)}
+.pagination{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:24px}
+.pagination a,.pagination span{display:inline-flex;align-items:center;justify-content:center;
+  min-width:36px;min-height:40px;padding:6px 10px;border-radius:3px;font-size:14px;text-decoration:none}
+.pagination a:hover{background:var(--surface)}
+.pagination a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.pagination [aria-current]{background:var(--accent);color:var(--on-accent);font-weight:700}
 
-.summary{margin-top:16px;font-size:17px;line-height:1.75;max-width:70ch}
-.summary h2{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);
-  margin:32px 0 8px;font-weight:700}
-.summary ul{padding-left:20px;margin:8px 0}
-.summary li{margin:5px 0}
-.mytodo{margin-top:20px;padding:18px 22px;background:var(--accent-soft);
-  border-left:3px solid var(--accent)}
-.mytodo-h{display:block;font-size:12px;letter-spacing:.16em;text-transform:uppercase;
-  color:var(--accent);font-weight:700;margin-bottom:8px}
-.mytodo ul{margin:0;padding-left:20px}
-.mytodo li{margin:6px 0;font-size:16px;line-height:1.65}
-.mytodo.none{background:transparent;border-left-color:var(--rule)}
-.mytodo.none .mytodo-h{color:var(--ink-3)}
-.mytodo.none p{margin:0;color:var(--ink-3);font-size:14px}
+/* 기록 화면: 왼쪽 요약·질문, 오른쪽 원문(근거) */
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin:-16px 0 24px;
+  font-size:14px;color:var(--ink-2)}
+.meta .url{font-family:Arial,sans-serif;color:var(--ink-3);word-break:break-all}
+.reason{margin:10px 0 0;font-size:14px;color:var(--danger)}
+.tools{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px;
+  padding:20px 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+form.retitle{display:flex;align-items:flex-end;gap:10px;flex:1 1 360px;max-width:560px}
+form.retitle>div{flex:1}
+.tools-act{display:flex;flex-wrap:wrap;gap:10px}
+.paper{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,440px);gap:56px;align-items:start}
+.source{position:sticky;top:24px}
 
-.qa{margin-top:16px;max-width:70ch}
-.qa-form{display:flex;gap:12px;align-items:stretch}
-.qa-form input{flex:1;padding:10px 2px;border:0;border-bottom:1px solid var(--ink-2);
-  background:transparent;color:var(--ink);font-family:inherit;font-size:15px;min-height:44px}
-.qa-form input:disabled{opacity:.45;border-bottom-style:dashed}
-.qa-item{margin-top:22px;padding-bottom:18px;border-bottom:1px solid var(--rule-2)}
-.qa-q{margin:0 0 8px;font-weight:600;font-size:15px}
-.qa-q::before{content:"묻다 ";font-size:11px;letter-spacing:.14em;color:var(--accent);
-  font-weight:700;vertical-align:2px}
-.qa-a{color:var(--ink-2);font-size:15px;line-height:1.75}
+.summary{max-width:68ch;font-size:16px;line-height:1.75}
+.summary h2{margin:28px 0 6px;font-size:15px;font-weight:700}
+.summary>h2:first-child{margin-top:20px;font-size:13px;font-weight:500;color:var(--ink-3)}
+.summary>h2:first-child+p{margin:4px 0 0;font-size:20px;line-height:1.55;font-weight:500;
+  text-wrap:pretty}
+.summary p{margin:6px 0}
+.summary ul{margin:6px 0;padding-left:20px}
+.summary li{margin:4px 0}
+
+.mytodo{margin-top:20px;padding:18px 20px;background:var(--surface);border:1px solid var(--rule);
+  border-radius:6px}
+.mytodo-h{display:block;margin-bottom:6px;font-size:15px;font-weight:700}
+.mytodo-h b{color:var(--accent)}
+.mytodo ul{list-style:none;margin:0;padding:0}
+.mytodo li{position:relative;margin:8px 0;padding-left:26px;line-height:1.6}
+.mytodo li::before{content:"";position:absolute;left:0;top:.3em;width:14px;height:14px;
+  border:1.5px solid var(--ink-2);border-radius:3px}
+.mytodo.none{background:transparent}
+.mytodo.none p{margin:0;font-size:14px;color:var(--ink-3)}
+
+.qa{max-width:68ch;margin-top:16px}
+.qa-form{display:flex;gap:10px;align-items:stretch}
+.qa-form input{flex:1}
+.qa-form input:disabled{border-style:dashed}
+.qa-item{padding:18px 0;border-bottom:1px solid var(--rule-2)}
+.qa-q{margin:0 0 6px;font-size:15px;font-weight:700}
+.qa-a{font-size:15px;line-height:1.75;color:var(--ink-2)}
 .qa-a p{margin:6px 0}
 .qa-a ul{margin:6px 0;padding-left:20px}
 .qa-a li{margin:3px 0}
-.qa-a.pending{color:var(--ink-3);font-style:italic}
+.qa-a.pending{color:var(--ink-3)}
 
-.transcript{white-space:pre-wrap;font-size:14px;line-height:1.9;color:var(--ink-2);
-  border-left:2px solid var(--rule);padding-left:20px;margin-top:12px}
-details>summary{cursor:pointer;font-size:12px;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--ink-3);padding:12px 0;font-weight:600}
-.log{font-size:13px;line-height:1.8;color:var(--ink-3);white-space:pre-wrap;
-  max-height:340px;overflow:auto}
-.back{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);
-  border:0;display:inline-block;margin:28px 0 0}
-/* 하위 화면(기록 상세·승인 관리)에서 메인으로 나가는 문. 아래쪽 '목록으로' 는 원문이 길면
-   폰에서 사실상 닿지 않아 위에도 둔다 — 여기선 링크가 아니라 버튼으로 보여야 한다. */
-.backbtn{display:inline-block;margin-bottom:16px;padding:8px 14px;min-height:36px;
-  font-size:12px;letter-spacing:.1em;color:var(--ink-2);border:1px solid var(--rule)}
-.backbtn:hover{color:var(--accent);border-color:var(--accent)}
+.transcript{max-height:calc(100dvh - 120px);overflow:auto;margin-top:8px;
+  font-size:14px;line-height:1.7;color:var(--ink-2)}
+.transcript p{display:grid;grid-template-columns:68px minmax(0,1fr);gap:12px;margin:0;padding:5px 0}
+.transcript p:hover{background:var(--surface)}
+.tc{padding-top:1px;font-size:13px;color:var(--ink-3)}
+.source .empty{padding:28px 0}
 
-.acct{float:right;clear:right;text-align:right;color:var(--ink-3);font-size:12px;
-  letter-spacing:.08em;margin-top:6px}
-.acct form{display:inline}
-button.link{background:transparent;border:0;color:var(--ink-3);font-size:12px;
-  letter-spacing:.08em;padding:0;min-height:0;border-bottom:1px solid var(--rule)}
-button.link:hover{color:var(--accent);border-bottom-color:var(--accent)}
-button.danger{color:var(--accent);border-color:var(--rule)}
+details{margin-top:44px;border-top:1px solid var(--rule)}
+details:not([open]) .log{display:none}
+details>summary{cursor:pointer;padding:14px 0;font-size:14px;font-weight:500;color:var(--ink-2)}
+.log{max-height:340px;overflow:auto;padding:14px;white-space:pre-wrap;
+  background:var(--surface);border:1px solid var(--rule);border-radius:4px;
+  font-size:12.5px;line-height:1.7;color:var(--ink-3)}
+.back{display:inline-block;margin-top:28px;font-size:14px;color:var(--ink-2);text-decoration:none}
 
-form.sheet{max-width:400px;margin:0 auto;display:grid;gap:22px}
-form.sheet button.primary{justify-self:start;padding:11px 32px}
-.msg{padding:12px 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
-  font-size:14px}
-.msg.fail{color:var(--accent)}
-.msg.ok{color:var(--ok)}
+/* 로그인·가입·알림 */
+.gate{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:64px;align-items:start;padding-top:64px}
+.gate h1{margin:0 0 16px;font-size:40px;line-height:1.2;font-weight:700;letter-spacing:-.02em}
+.lede{max-width:46ch;margin:0;font-size:17px;color:var(--ink-2)}
+.lede+.lede{margin-top:12px}
+.sheet{display:grid;gap:18px;padding:28px;background:var(--surface);border:1px solid var(--rule);
+  border-radius:6px}
+.sheet h2{margin:0;font-size:20px}
+.sheet button.primary{justify-self:start;padding:10px 32px}
+.msg{padding:12px 14px;border-radius:4px;background:var(--bg);font-size:14px}
+.msg.fail{color:var(--danger);background:var(--danger-soft)}
 
-form.retitle{display:flex;gap:12px;align-items:flex-end;margin-top:18px;max-width:560px}
-form.retitle input{flex:1}
+/* 승인 관리 */
+.inline{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:18px 0}
+.inline input{flex:1;min-width:200px}
+.screen{display:block;width:100%;max-width:1280px;border:1px solid var(--rule);cursor:crosshair}
 
+@media (max-width:900px){
+  .desk,.paper,.gate{grid-template-columns:minmax(0,1fr);gap:32px}
+  .console,.source{position:static}
+  .transcript{max-height:none}
+  .gate{padding-top:32px}
+}
 @media (max-width:760px){
   .wrap{padding:0 18px 72px}
-  /* 폰 폭(360px)에 탭 넷이 한 줄로 들어가게 활자·자간·간격을 함께 줄인다 */
-  nav.tabs button{font-size:12px;letter-spacing:.06em;margin-right:18px}
-  .acct{float:none;text-align:left}
-  form.compose{grid-template-columns:1fr;gap:20px}
-  .masthead .meta{float:none;text-align:left;margin-top:8px}
-  .masthead h1{font-size:24px}
-  /* 폰 폭에선 nowrap 인 날짜·길이 열이 제목을 3줄로 짓눌렀다 → 두 열을 접고 날짜는 제목 밑으로 */
+  .head{padding:24px 0 20px}
+  .head h1{font-size:26px}
+  .gate h1{font-size:30px}
+  .clock{font-size:44px}
+  .pane{padding:20px}
+  .pair{grid-template-columns:1fr}
+  /* 폰 폭에선 날짜·길이 열이 제목을 짓누른다 → 두 열을 접고 날짜는 제목 밑으로 */
   th:nth-child(3),td:nth-child(3),th:nth-child(4),td:nth-child(4){display:none}
-  .when-sm{display:block;color:var(--ink-3);font-size:12px;margin-top:4px}
-  /* zoom URL 은 break-all 로 6줄까지 늘어나 한 기록이 화면을 다 먹는다 → 한 줄로 자른다 */
-  .url{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+  .when-sm{display:block}
+  td .status{flex-direction:column;align-items:flex-start;gap:6px}
+  .tools{align-items:stretch}
 }
 """
 
 FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
          '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
-         'family=Fira+Code:wght@400;500&family=Noto+Serif+KR:wght@400;600;700&display=swap">')
+         'family=Noto+Sans+KR:wght@300;400;500;700&display=swap">'
+         '<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27'
+         ' viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%276%27'
+         ' fill=%27%2308756b%27/%3E%3C/svg%3E">')
 
 STATE_KO = {
     "scheduled": ("대기 예약", "wait"), "queued": ("입장 준비", "live"),
@@ -214,11 +277,9 @@ ACTIVE = {"scheduled", "queued", "joining", "recording", "downloading",
 # 먼 미래의 예약만 있어도 목록 전체를 10초마다 새로고침하면 작성 중인 폼이 지워진다.
 # 실제 상태가 빠르게 바뀌는 작업만 자동 갱신한다.
 AUTO_REFRESH = ACTIVE - {"scheduled"}
-
-
-def _is_zoom(j: dict) -> bool:
-    """퇴장·예약취소 버튼은 줌 봇 잡에만 뜻이 있다 — 링크 전사·직접 녹음엔 나갈 회의가 없다."""
-    return "zoom.us" in (j.get("url") or "")
+# 진행 미터의 지금 칸(0 수집 · 1 전사 · 2 요약). 완료는 세 칸 모두 채운다.
+STAGE = {"queued": 0, "joining": 0, "recording": 0, "downloading": 0,
+         "transcribing": 1, "summarizing": 2, "done": 3}
 
 
 def _e(s) -> str:
@@ -228,6 +289,33 @@ def _e(s) -> str:
 def _json_str(s) -> str:
     """onclick="…" 속성 안에 넣을 JS 문자열 리터럴(따옴표까지 이스케이프)."""
     return html.escape(json.dumps(str(s or "")))
+
+
+def _when(j: dict) -> str:
+    return (j.get("scheduled_at") or j.get("created_at") or "").replace("T", " ")[:16]
+
+
+def _dur(sec) -> str:
+    """길이를 타임코드로(42:10, 1:02:33). 없으면 '-'."""
+    s = int(sec or 0)
+    if not s:
+        return "-"
+    h, m = divmod(s // 60, 60)
+    return f"{h}:{m:02d}:{s % 60:02d}" if h else f"{m}:{s % 60:02d}"
+
+
+def _source(u: str) -> str:
+    """목록용 출처는 호스트만 둔다(줌 pwd·긴 회의 번호가 폰에서 줄을 넘겼다). 전체 주소는 기록 화면에 있다."""
+    return (urlsplit(u).hostname or u).removeprefix("www.")
+
+
+def status_html(status: str) -> str:
+    label, kind = STATE_KO.get(status, (status, ""))
+    n = STAGE.get(status, -1)
+    cells = "".join(f'<i class="{"on" if k < n else "now" if k == n else ""}"></i>'
+                    for k in range(3))
+    return (f'<span class="status"><span class="meter" title="수집 · 전사 · 요약">{cells}</span>'
+            f'<span class="state {kind}">{_e(label)}</span></span>')
 
 
 BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -270,6 +358,20 @@ def md_to_html(md: str) -> str:
     return "\n".join(out)
 
 
+TIMECODE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s?(.*)$")
+
+
+def transcript_html(text: str) -> str:
+    """'[00:01:23] 발화' 줄을 타임코드 열 + 발화로 나눈다. 타임코드가 없는 줄은 발화만."""
+    out = []
+    for line in (text or "").splitlines():
+        m = TIMECODE.match(line.strip())
+        tc, body = (m.group(1), m.group(2)) if m else ("", line.strip())
+        if body:
+            out.append(f'<p><span class="tc">{tc}</span><span>{_e(body)}</span></p>')
+    return "".join(out)
+
+
 MY_TODO = re.compile(r"^##\s*내 할 일\s*$", re.M)
 
 
@@ -301,16 +403,14 @@ def my_todo_block(items: list[str]) -> str:
         return ('<div class="mytodo none"><span class="mytodo-h">내가 할 일</span>'
                 '<p>이 회의에서 나에게 배정된 일은 없다.</p></div>')
     lis = "".join(f"<li>{_bold(_e(x))}</li>" for x in items)
-    return (f'<div class="mytodo"><span class="mytodo-h">내가 할 일 · {len(items)}건</span>'
+    return (f'<div class="mytodo"><span class="mytodo-h">내가 할 일 <b>{len(items)}건</b></span>'
             f'<ul>{lis}</ul></div>')
 
 
 def qa_block(job: dict) -> str:
-    import json as _json
-
     history = []
     try:
-        history = _json.loads(job.get("qa") or "[]")
+        history = json.loads(job.get("qa") or "[]")
     except Exception:
         history = []
     past = "".join(
@@ -319,8 +419,8 @@ def qa_block(job: dict) -> str:
         for h in history)
     disabled = "" if (job.get("transcript") or "").strip() else " disabled"
     hint = ("" if not disabled else
-            '<div class="hint">전사가 끝나야 질문할 수 있다.</div>')
-    return f"""<h2 class="rule">이 회의에 묻기</h2>
+            '<p class="hint">전사가 끝나야 질문할 수 있다.</p>')
+    return f"""<h2 class="sec">이 회의에 묻기</h2>
 <div class="qa">
   <div class="qa-form">
     <input id="q" type="text" placeholder="예: 내가 언제까지 뭘 하기로 했지?"{disabled}
@@ -339,58 +439,70 @@ def page(title: str, body: str) -> str:
 <body><div class="wrap">{body}</div></body></html>"""
 
 
-def masthead(sub: str, user: str = "", admin: bool = False, back: str = "") -> str:
+def topbar(user: str = "", admin: bool = False) -> str:
     acct = ""
     if user:
-        adm = ' <a href="/admin">승인 관리</a> ·' if admin else ""
-        acct = (f'<div class="acct mono">{_e(user)} ·{adm}'
-                f' <form method="post" action="/logout"><button class="link">로그아웃</button>'
-                f'</form></div>')
+        adm = '<a href="/admin">승인 관리</a>' if admin else ""
+        acct = (f'<nav class="acct"><span class="who">{_e(user)}</span>{adm}'
+                f'<form method="post" action="/logout"><button class="link">로그아웃</button>'
+                f'</form></nav>')
+    return f'<header class="bar"><a class="brand" href="/">AutoZoom</a>{acct}</header>'
+
+
+def head(title: str, sub: str = "", back: str = "") -> str:
     home = f'<a class="backbtn" href="{_e(back)}">← 기록 목록</a>' if back else ""
-    return f"""<header class="masthead">
-  <div class="meta mono">AUTO&nbsp;ZOOM</div>{acct}
-  {home}<h1>회의 속기록</h1><p>{_e(sub)}</p></header>"""
+    lead = f"<p>{_e(sub)}</p>" if sub else ""
+    return f'<div class="head">{home}<h1>{_e(title)}</h1>{lead}</div>'
+
+
+INTRO = ('<p class="lede">줌 회의에 봇을 보내거나 이 기기로 녹음하거나 영상 링크나 파일을 넣으면, '
+         '타임코드가 붙은 원문과 요약이 남는다.</p>'
+         '<p class="lede">요약은 원문에 있는 말만 쓰고, 내 할 일을 따로 뽑으며, '
+         '원문에 직접 물어볼 수 있다.</p>')
+
+
+def _gate(heading: str, form: str) -> str:
+    return (topbar() + f'<main class="gate"><div><h1>{_e(heading)}</h1>{INTRO}</div>'
+            f'{form}</main>')
 
 
 def login(err: str = "") -> str:
     msg = f'<div class="msg fail">{_e(err)}</div>' if err else ""
-    body = masthead("승인된 계정만 입장할 수 있다.") + f"""
-<h2 class="rule">로그인</h2>
-<form class="sheet" method="post" action="/login" style="margin-top:32px">
+    form = f"""<form class="sheet" method="post" action="/login">
+  <h2>로그인</h2>
   {msg}
   <div><label for="u">아이디</label>
        <input id="u" name="username" type="text" autocomplete="username" required></div>
   <div><label for="p">비밀번호</label>
        <input id="p" name="password" type="password" autocomplete="current-password" required></div>
   <button class="primary" type="submit">입장</button>
-  <p class="hint">계정이 없으면 <a href="/signup">가입 신청</a> 후 관리자 승인을 기다린다.</p>
+  <p class="hint">승인된 계정만 입장할 수 있다. 계정이 없으면 <a href="/signup">가입 신청</a> 후
+    관리자 승인을 기다린다.</p>
 </form>"""
-    return page("로그인 · auto_zoom", body)
+    return page("로그인 · AutoZoom", _gate("회의 속기록", form))
 
 
 def signup(err: str = "") -> str:
     msg = f'<div class="msg fail">{_e(err)}</div>' if err else ""
-    body = masthead("관리자가 승인한 사람만 쓸 수 있다.") + f"""
-<h2 class="rule">가입 신청</h2>
-<form class="sheet" method="post" action="/signup" style="margin-top:32px">
+    form = f"""<form class="sheet" method="post" action="/signup">
+  <h2>가입 신청</h2>
   {msg}
   <div><label for="u">아이디</label>
        <input id="u" name="username" type="text" autocomplete="username" required></div>
   <div><label for="p">비밀번호</label>
        <input id="p" name="password" type="password" autocomplete="new-password" required></div>
   <button class="primary" type="submit">신청</button>
-  <p class="hint">신청 후 관리자 승인을 받아야 로그인된다. <a href="/login">로그인으로</a></p>
+  <p class="hint">관리자가 승인해야 로그인된다. <a href="/login">로그인으로</a></p>
 </form>"""
-    return page("가입 신청 · auto_zoom", body)
+    return page("가입 신청 · AutoZoom", _gate("회의 속기록", form))
 
 
 def notice(msg: str, ok: bool, link: str = "/login", link_text: str = "로그인으로") -> str:
-    body = masthead("") + f"""
-<div class="sheet" style="margin-top:48px">
+    box = f"""<div class="sheet">
   <div class="msg {'ok' if ok else 'fail'}">{_e(msg)}</div>
-  <p class="hint" style="margin-top:20px"><a href="{link}">{_e(link_text)}</a></p>
+  <p class="hint"><a href="{link}">{_e(link_text)}</a></p>
 </div>"""
-    return page("알림 · auto_zoom", body)
+    return page("알림 · AutoZoom", _gate("회의 속기록", box))
 
 
 USER_STATE_KO = {"pending": "승인 대기", "approved": "사용 중", "rejected": "거절됨"}
@@ -413,15 +525,15 @@ def admin(users: list[dict], me: str, bot_status: dict | None = None) -> str:
         if u["username"] != me:
             buttons.append(("remove", "삭제", "ghost danger"))
         return "".join(
-            f'<form method="post" action="/admin/{a}" style="display:inline">'
+            f'<form method="post" action="/admin/{a}">'
             f'<input type="hidden" name="username" value="{_e(u["username"])}">'
             f'<button class="{cls}" type="submit">{label}</button></form> '
             for a, label, cls in buttons)
 
     rows = "".join(f"""<tr>
-      <td><span class="state">{_e(USER_STATE_KO.get(u["status"], u["status"]))}</span></td>
+      <td class="num"><span class="state">{_e(USER_STATE_KO.get(u["status"], u["status"]))}</span></td>
       <td>{_e(u["username"])}{' · 관리자' if u.get("role") == "admin" else ''}</td>
-      <td class="num">{actions(u)}</td></tr>""" for u in users)
+      <td class="act">{actions(u)}</td></tr>""" for u in users)
     bot_status = bot_status or {"state": "idle", "message": "아직 로그인 작업을 시작하지 않았습니다."}
     state = str(bot_status.get("state") or "idle")
     state_name = LOGIN_STATE_KO.get(state, state)
@@ -438,28 +550,28 @@ def admin(users: list[dict], me: str, bot_status: dict | None = None) -> str:
              pattern="[0-9]{4,8}" maxlength="8" required></div>
     <button class="ghost" type="submit">인증 코드 전송</button>
   </form>"""
-    body = masthead("가입 신청을 승인·거절한다.", me, True, back="/") + f"""
-<h2 class="rule">Zoom 봇 계정</h2>
-<div class="rec">
+    body = topbar(me, True) + head("승인 관리", "가입 신청을 승인·거절하고 줌 봇 계정을 관리한다.",
+                                   back="/") + f"""
+<h2 class="sec">Zoom 봇 계정</h2>
+<div class="inline">
   <form method="post" action="/admin/zoom-login">
     <button class="primary" type="submit"{' disabled' if active else ''}>{login_button}</button>
   </form>
-  <div><span class="state">{_e(state_name)}</span>
-    <div class="hint">{message}</div>
-    <div class="hint">로그인 창은 이 기기에 뜨지 않고 Autozoom 서버의 봇 브라우저에서 처리됩니다.</div></div>
+  <div><span class="state live">{_e(state_name)}</span>
+    <p class="hint">{message}</p>
+    <p class="hint">로그인 창은 이 기기에 뜨지 않고 Autozoom 서버의 봇 브라우저에서 처리됩니다.</p></div>
 </div>{otp}
 {'<script>setTimeout(() => location.reload(), 2500)</script>' if active else ''}
-<h2 class="rule">직접 로그인 (원격 화면)</h2>
-<div class="hint" style="margin-top:10px">자동 로그인이 막힐 때 쓴다. 아래 화면이 서버의 봇 브라우저다 —
-  화면을 눌러 입력칸을 고르고, 입력창에 쓴 뒤 '입력'을 누른다. 로그인이 끝나면 '세션 저장'.</div>
-<div class="rec" style="border-bottom:0">
+<h2 class="sec">직접 로그인 (원격 화면)</h2>
+<p class="hint">자동 로그인이 막힐 때 쓴다. 아래 화면이 서버의 봇 브라우저다.
+  화면을 눌러 입력칸을 고르고, 입력창에 쓴 뒤 '입력'을 누른다. 로그인이 끝나면 '세션 저장'.</p>
+<div class="inline">
   <button class="primary" id="rl-start" onclick="rlStart()">원격 로그인 열기</button>
   <span class="state" id="rl-msg"></span>
 </div>
 <div id="rl-panel" hidden>
-  <img id="rl-screen" style="width:100%;max-width:1280px;border:1px solid var(--rule);
-       cursor:crosshair;display:block" alt="봇 브라우저 화면">
-  <div class="rec" style="border-bottom:0;padding-top:12px">
+  <img id="rl-screen" class="screen" alt="봇 브라우저 화면">
+  <div class="inline">
     <input id="rl-text" type="text" placeholder="이메일·비밀번호·인증코드 입력 후 [입력]"
            onkeydown="if(event.key==='Enter'){{rlType();event.preventDefault()}}">
     <button class="ghost" onclick="rlType()">입력</button>
@@ -470,7 +582,7 @@ def admin(users: list[dict], me: str, bot_status: dict | None = None) -> str:
     <button class="ghost danger" onclick="rlStop()">닫기</button>
   </div>
 </div>
-<h2 class="rule">계정</h2>
+<h2 class="sec"><span>계정<span class="count">{len(users)}명</span></span></h2>
 <table><thead><tr><th>상태</th><th>아이디</th><th></th></tr></thead>
 <tbody>{rows}</tbody></table>
 <a class="back" href="/">← 목록으로</a>
@@ -511,14 +623,10 @@ function rlKey(k){{ rlEvent({{t:'key', v:k}}); }}
 async function rlSave(){{ rlEvent({{t:'save'}}); }}
 async function rlStop(){{ await fetch('/api/remote-login/stop', {{method:'POST'}}); }}
 </script>"""
-    return page("승인 관리 · auto_zoom", body)
+    return page("승인 관리 · AutoZoom", body)
 
 
 def row(j: dict) -> str:
-    label, mark = STATE_KO.get(j["status"], (j["status"], ""))
-    when = j.get("scheduled_at") or j.get("created_at") or ""
-    dur = j.get("duration_s") or 0
-    dur_s = f"{int(dur) // 60}분" if dur else "—"
     title = j.get("title") or "제목 없음"
     if j["status"] in ACTIVE:
         act = (f'<button class="ghost" onclick="stop(\'{j["id"]}\')">'
@@ -527,98 +635,127 @@ def row(j: dict) -> str:
         act = (f'<button class="ghost danger" onclick="del(\'{j["id"]}\','
                f'{_json_str(title)})">삭제</button>')
     return f"""<tr>
-  <td><span class="mark {mark}"></span><span class="state">{_e(label)}</span></td>
-  <td><a href="/jobs/{j['id']}">{_e(title)}</a>
-      <span class="url mono">{_e(j['url'][:78]) if j.get('url') else '직접 녹음'}</span>
-      <span class="when-sm mono">{_e(when).replace('T', ' ')[:16]}</span></td>
-  <td class="num mono">{_e(when).replace('T', ' ')[:16]}</td>
-  <td class="num mono">{dur_s}</td>
-  <td class="num">{act}</td></tr>"""
+  <td class="num">{status_html(j["status"])}</td>
+  <td><a class="title" href="/jobs/{j['id']}">{_e(title)}</a>
+      <span class="src">{_e(_source(j['url'])) if j.get('url') else '직접 녹음'}</span>
+      <span class="when-sm">{_e(_when(j))}</span></td>
+  <td class="num">{_e(_when(j))}</td>
+  <td class="num">{_dur(j.get("duration_s"))}</td>
+  <td class="act">{act}</td></tr>"""
 
 
-def index(jobs: list[dict], user: str = "", admin: bool = False) -> str:
+def pagination(current_page: int, total: int) -> str:
+    pages = max(1, (total + 4) // 5)
+    if pages == 1:
+        return ""
+    start = ((current_page - 1) // 10) * 10 + 1
+    end = min(start + 9, pages)
+    links = []
+    if start > 1:
+        links.append(f'<a href="/?page={start - 1}" aria-label="이전 10페이지">이전</a>')
+    for number in range(start, end + 1):
+        if number == current_page:
+            links.append(f'<span aria-current="page">{number}</span>')
+        else:
+            links.append(f'<a href="/?page={number}" aria-label="{number}페이지">{number}</a>')
+    if end < pages:
+        links.append(f'<a href="/?page={end + 1}" aria-label="다음 10페이지">다음</a>')
+    return '<nav class="pagination" aria-label="기록 페이지">' + "".join(links) + '</nav>'
+
+
+def index(jobs: list[dict], user: str = "", admin: bool = False,
+          current_page: int = 1, total: int | None = None) -> str:
+    if total is None:
+        total = len(jobs)
     rows = "".join(row(j) for j in jobs)
     table = f"""<table><thead><tr>
-      <th>상태</th><th>회의</th><th>예약·생성</th><th>길이</th><th></th>
+      <th>진행</th><th>회의</th><th>예약·생성</th><th>길이</th><th></th>
     </tr></thead><tbody>{rows}</tbody></table>""" if jobs else \
-        '<div class="empty">아직 기록이 없다. 위에 회의 링크를 넣어 시작한다.</div>'
+        ('<div class="empty"><strong>아직 기록이 없다</strong>'
+         '녹음을 시작하거나 회의 링크·파일을 넣으면 여기에 쌓인다.</div>')
 
-    body = masthead("이 기기로 녹음하거나, 줌에 봇을 보내거나, 영상 링크·파일을 넣는다. "
-                    "어느 쪽이든 전문과 요약, 질의응답이 남는다.", user, admin) + f"""
+    body = topbar(user, admin) + head("회의 속기록") + f"""
+<main class="desk">
+<section class="console" aria-label="새 기록">
 <nav class="tabs">
   <button id="tb-rec" class="on" onclick="showTab('rec')">녹음</button>
   <button id="tb-zoom" onclick="showTab('zoom')">줌 봇</button>
   <button id="tb-media" onclick="showTab('media')">링크 전사</button>
   <button id="tb-file" onclick="showTab('file')">동영상 올리기</button>
 </nav>
-<section id="tab-rec">
-  <div class="rec">
-    <button id="recbtn" class="primary" onclick="toggleRec()">● 녹음 시작</button>
-    <span id="rectime" class="mono">00:00</span>
-    <input id="rectitle" type="text" maxlength="80" placeholder="제목(선택)">
-  </div>
-  <div class="hint">이 기기의 마이크로 바로 녹음한다. 정지하면 전사·요약·질의응답까지 그대로 이어진다.</div>
+<section id="tab-rec" class="pane">
+  <span id="rectime" class="clock">00:00</span>
+  <button id="recbtn" class="recbtn" onclick="toggleRec()">● 녹음 시작</button>
+  <div><label for="rectitle">제목</label>
+    <input id="rectitle" type="text" maxlength="80" placeholder="선택"></div>
+  <p class="hint">이 기기의 마이크로 바로 녹음한다. 정지하면 전사·요약·질의응답까지 그대로 이어진다.</p>
 </section>
 <section id="tab-zoom" hidden>
-  <form class="compose" method="post" action="/jobs">
-    <div class="wide">
+  <form class="pane" method="post" action="/jobs">
+    <div>
       <label for="url">회의 링크</label>
       <input id="url" name="url" type="url" required
              placeholder="https://us05web.zoom.us/j/000000000?pwd=…">
-      <div class="hint">Zoom·유튜브·단축 링크 모두 가능. 실제 주소를 확인해 Zoom이면 봇 참석, 영상이면 녹음·전사로 자동 처리한다</div>
+      <p class="hint">Zoom·유튜브·단축 링크 모두 가능. 실제 주소를 확인해 Zoom이면 봇 참석, 영상이면 녹음·전사로 자동 처리한다</p>
     </div>
     <div>
       <label for="title">제목</label>
       <input id="title" name="title" type="text" placeholder="예: 주간 전략 회의" maxlength="80">
-      <div class="hint">기록 목록에 표시된다. 나중에 바꿀 수 있다</div>
+      <p class="hint">기록 목록에 표시된다. 나중에 바꿀 수 있다</p>
     </div>
-    <div>
-      <label for="bot">입장 이름</label>
-      <input id="bot" name="bot_name" type="text" placeholder="회의록봇" maxlength="30">
-      <div class="hint">참가자에게 보이는 이름</div>
+    <div class="pair">
+      <div>
+        <label for="bot">입장 이름</label>
+        <input id="bot" name="bot_name" type="text" placeholder="회의록봇" maxlength="30">
+        <p class="hint">참가자에게 보이는 이름</p>
+      </div>
+      <div>
+        <label for="at">입장 시각</label>
+        <input id="at" name="scheduled_at" type="datetime-local">
+        <p class="hint">비우면 즉시 입장</p>
+      </div>
     </div>
-    <div>
-      <label for="at">입장 시각</label>
-      <input id="at" name="scheduled_at" type="datetime-local">
-      <div class="hint">비우면 즉시 입장</div>
-    </div>
-    <button class="primary" type="submit">봇 보내기</button>
+    <button class="primary full" type="submit">봇 보내기</button>
   </form>
 </section>
 <section id="tab-media" hidden>
-  <form class="compose" method="post" action="/media">
-    <div class="wide">
+  <form class="pane" method="post" action="/media">
+    <div>
       <label for="murl">영상 링크</label>
       <input id="murl" name="url" type="url" required
              placeholder="https://www.youtube.com/watch?v=…">
-      <div class="hint">Zoom·유튜브·단축 링크 모두 가능. 라이브는 시작을 기다렸다가 녹음하며 원문을 실시간으로 채운다</div>
+      <p class="hint">Zoom·유튜브·단축 링크 모두 가능. 라이브는 시작을 기다렸다가 녹음하며 원문을 실시간으로 채운다</p>
     </div>
     <div>
       <label for="mtitle">제목</label>
       <input id="mtitle" name="title" type="text" placeholder="비우면 영상 제목" maxlength="80">
-      <div class="hint">비우면 영상 제목을 그대로 쓴다</div>
     </div>
-    <button class="primary" type="submit">녹음·전사 시작</button>
+    <button class="primary full" type="submit">녹음·전사 시작</button>
   </form>
 </section>
-<section id="tab-file" hidden>
-  <div class="rec">
-    <input id="vfile" type="file" accept="video/*,audio/*">
-    <input id="vtitle" type="text" maxlength="80" placeholder="제목(비우면 파일 이름)">
-    <button id="vbtn" class="primary" onclick="upload()">전사·요약 시작</button>
-  </div>
-  <div class="hint">회의를 찍은 동영상이나 녹음 파일을 그대로 올린다. 소리만 뽑아 전사하고
-    요약·질의응답까지 이어진다. 큰 파일은 나눠서 올라가니 다 올라갈 때까지 이 창을 닫지 않는다.</div>
+<section id="tab-file" class="pane" hidden>
+  <input id="vfile" type="file" accept="video/*,audio/*" aria-label="올릴 파일">
+  <div><label for="vtitle">제목</label>
+    <input id="vtitle" type="text" maxlength="80" placeholder="비우면 파일 이름"></div>
+  <button id="vbtn" class="primary full" onclick="upload()">전사·요약 시작</button>
+  <p class="hint">회의를 찍은 동영상이나 녹음 파일을 그대로 올린다. 소리만 뽑아 전사하고
+    요약·질의응답까지 이어진다. 큰 파일은 나눠서 올라가니 다 올라갈 때까지 이 창을 닫지 않는다.</p>
 </section>
-<h2 class="rule">기록</h2>
+</section>
+<section class="archive">
+<h2 class="sec"><span>기록<span class="count">전체 {total}건</span></span></h2>
 {table}
+{pagination(current_page, total)}
+</section>
+</main>
 <script>
 function showTab(k){{
   for (const t of ['rec','zoom','media','file']){{
     document.getElementById('tab-'+t).hidden = t !== k;
     document.getElementById('tb-'+t).classList.toggle('on', t === k);
   }}
-  history.replaceState(null, '', location.pathname + '#' + k);
+  history.replaceState(null, '', location.pathname + location.search + '#' + k);
+  document.querySelectorAll('.pagination a').forEach(a => {{ a.hash = k; }});
 }}
 // 해시로 탭을 기억한다 — 10초 자동 새로고침에도 유지되고, 링크로 공유해도 그 탭이 열린다.
 showTab(['zoom','media','file'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'rec');
@@ -719,49 +856,57 @@ if (busy) setInterval(()=>{{
   if(!(mr && mr.state === 'recording') && !uploading && !editingForm()) location.reload();
 }}, 10000);
 </script>"""
-    return page("회의 속기록 · auto_zoom", body)
+    return page("회의 속기록 · AutoZoom", body)
 
 
 def detail(j: dict, user: str = "", admin: bool = False) -> str:
-    label, mark = STATE_KO.get(j["status"], (j["status"], ""))
-    parts = [masthead(j.get("title") or "제목 없음", user, admin, back="/")]
-    parts.append(f"""<p style="margin-top:20px">
-      <span class="mark {mark}"></span><span class="state">{_e(label)}</span>
-      <span class="url mono">{_e(j['url']) if j.get('url') else '직접 녹음'}</span></p>""")
+    title = j.get("title") or "제목 없음"
+    parts = [topbar(user, admin), head(title, back="/")]
+    src = _e(j["url"]) if j.get("url") else "직접 녹음"
+    parts.append(f'<div class="meta">{status_html(j["status"])}<span>{_e(_when(j))}</span>'
+                 f'<span>{_dur(j.get("duration_s"))}</span><span class="url">{src}</span></div>')
     if j.get("reason"):
-        parts.append(f'<p class="hint">종료 사유 · {_e(j["reason"])}</p>')
-    # 제목 고치기 — JS 없이 폼 하나로 끝낸다(저장 후 이 화면으로 되돌아온다).
-    parts.append(f"""<form class="retitle" method="post" action="/jobs/{j['id']}/title">
-      <div style="flex:1"><label for="t">제목</label>
-        <input id="t" name="title" type="text" maxlength="80" placeholder="제목 없음"
-               value="{_e(j.get('title'))}"></div>
-      <button class="ghost" type="submit">제목 저장</button></form>""")
+        parts.append(f'<p class="reason">종료 사유 · {_e(j["reason"])}</p>')
     if j["status"] in ACTIVE:
-        parts.append(f"""<p><button class="ghost" onclick="stop('{j['id']}')">
-          {"예약 취소" if j["status"] == "scheduled" else "녹음·전사 중지"}</button></p>""")
+        acts = (f'<button class="ghost" onclick="stop(\'{j["id"]}\')">'
+                f'{"예약 취소" if j["status"] == "scheduled" else "녹음·전사 중지"}</button>')
     else:
         # 녹음은 남았는데 전사·요약만 넘어진 잡 — 다시 못 찍는 회의라 되돌릴 길을 둔다.
-        again = (f'<button class="ghost" onclick="again(\'{j["id"]}\')">전사 다시 시도</button> '
+        again = (f'<button class="ghost" onclick="again(\'{j["id"]}\')">전사 다시 시도</button>'
                  if j["status"] in ("failed", "stopped") and j.get("wav_path") else "")
-        parts.append(f'<p>{again}<button class="ghost danger" onclick="del(\'{j["id"]}\','
-                     f'{_json_str(j.get("title") or "제목 없음")})">기록 삭제</button></p>')
+        acts = (f'{again}<button class="ghost danger" onclick="del(\'{j["id"]}\','
+                f'{_json_str(title)})">기록 삭제</button>')
+    # 제목 고치기 — JS 없이 폼 하나로 끝낸다(저장 후 이 화면으로 되돌아온다).
+    parts.append(f"""<div class="tools">
+  <form class="retitle" method="post" action="/jobs/{j['id']}/title">
+    <div><label for="t">제목</label>
+      <input id="t" name="title" type="text" maxlength="80" placeholder="제목 없음"
+             value="{_e(j.get('title'))}"></div>
+    <button class="ghost" type="submit">제목 저장</button></form>
+  <div class="tools-act">{acts}</div>
+</div>""")
 
+    main = []
     if j.get("summary"):
         if j.get("coresight_slug"):
-            action = (f'<span class="filed">Coresight 등재됨 · '
-                      f'<span class="mono">{_e(j["coresight_slug"])}</span></span>'
+            action = (f'<span class="filed">Coresight 등재됨 · {_e(j["coresight_slug"])}</span>'
                       f'<button class="ghost" onclick="toCoresight(\'{j["id"]}\')">다시 올리기</button>')
         else:
             action = (f'<button class="ghost" onclick="toCoresight(\'{j["id"]}\')">'
                       f'Coresight에 올리기</button>')
         todo, rest = split_my_todo(j["summary"])
-        parts.append(f'<h2 class="rule">요약<span class="rule-act">{action}</span></h2>')
-        parts.append(my_todo_block(todo))
-        parts.append(f'<div class="summary">{md_to_html(rest)}</div>')
-    parts.append(qa_block(j))
-    if j.get("transcript"):
-        parts.append('<h2 class="rule">원문</h2>'
-                     f'<div class="transcript mono">{_e(j["transcript"])}</div>')
+        main.append(f'<h2 class="sec">요약<span class="sec-act">{action}</span></h2>')
+        main.append(my_todo_block(todo))
+        main.append(f'<div class="summary">{md_to_html(rest)}</div>')
+    main.append(qa_block(j))
+
+    lines = transcript_html(j.get("transcript"))
+    count = f'<span class="count">{lines.count("<p>")}줄</span>' if lines else ""
+    body = (f'<div class="transcript">{lines}</div>' if lines else
+            '<div class="empty">전사가 시작되면 원문이 타임코드와 함께 여기에 쌓인다.</div>')
+    parts.append(f'<div class="paper"><div>{"".join(main)}</div>'
+                 f'<aside class="source"><h2 class="sec"><span>원문{count}</span></h2>{body}</aside>'
+                 f'</div>')
     parts.append('<details><summary>진행 로그</summary>'
                  f'<div class="log mono">{_e(j.get("log"))}</div></details>')
     parts.append('<a class="back" href="/">← 목록으로</a>')
@@ -832,4 +977,4 @@ if ({str(j["status"] in AUTO_REFRESH).lower()}) setTimeout(()=>{{
   if (!formDirty && !(el && el.matches('input, textarea, select'))) location.reload();
 }}, 10000);
 </script>""")
-    return page(f"{j.get('title') or '회의'} · auto_zoom", "".join(parts))
+    return page(f"{title} · AutoZoom", "".join(parts))

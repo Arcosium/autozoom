@@ -7,7 +7,7 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -170,9 +170,12 @@ def admin_act(request: Request, action: str, username: str = Form(...)) -> Redir
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
+def index(request: Request, page: int = Query(1, ge=1)) -> HTMLResponse:
     me = _me(request)
-    return HTMLResponse(ui.index(jobs.list_jobs(), me, auth.is_admin(me)))
+    total = jobs.count_jobs()
+    page = min(page, max(1, (total + 4) // 5))
+    return HTMLResponse(ui.index(jobs.list_jobs(limit=5, offset=(page - 1) * 5),
+                                 me, auth.is_admin(me), current_page=page, total=total))
 
 
 @app.post("/jobs")

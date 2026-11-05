@@ -130,12 +130,19 @@ def get_job(job_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def list_jobs(limit: int = 50) -> list[dict]:
+def count_jobs() -> int:
+    init_db()
+    with _db_lock, _conn() as c:
+        return c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+
+
+def list_jobs(limit: int = 50, offset: int = 0) -> list[dict]:
     init_db()
     with _db_lock, _conn() as c:
         rows = c.execute(
             "SELECT id,url,title,status,reason,created_at,scheduled_at,ended_at,duration_s "
-            "FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            "FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset)).fetchall()
     return [dict(r) for r in rows]
 
 
